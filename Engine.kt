@@ -26,10 +26,19 @@ import java.io.File
 
 enum class St { Queued, Running, Done, Failed, Canceled }
 
+val LADDER = listOf(144, 240, 360, 480, 720, 1080, 1440, 2160, 4320)
+fun lowerQ(h: Int): Int = LADDER.lastOrNull { it < h } ?: 0
+
 class Task(
-    val id: String, val url: String, val title: String, val thumb: String?,
+    val id: String, val url: String, title: String, thumb: String?,
     val audio: Boolean, val height: Int, val subs: Boolean, val playlist: Boolean
 ) {
+    var title by mutableStateOf(title)
+    var thumb by mutableStateOf(thumb)
+    var uploader: String? = null
+    var clipStart = ""
+    var clipEnd = ""
+    var keep = false            // إيقاف مؤقت: نحتفظ بالجزء المحمّل عشان نكمّل منه
     var st by mutableStateOf(St.Queued)
     var progress by mutableFloatStateOf(0f)
     var eta by mutableLongStateOf(0L)
@@ -39,7 +48,10 @@ class Task(
 
 class Item(val title: String, val thumb: String?, val uri: String, val audio: Boolean, val src: String = "")
 
-object Incoming { val v = MutableStateFlow<String?>(null) }
+object Incoming {
+    val v = MutableStateFlow<String?>(null)
+    val clip = MutableStateFlow<String?>(null)   // رابط منسوخ في الكليبورد
+}
 
 object Prefs {
     lateinit var sp: SharedPreferences
@@ -47,19 +59,35 @@ object Prefs {
     var subs by mutableStateOf(false)
     var concurrent by mutableIntStateOf(2)
     var audioFmt by mutableStateOf("m4a")
+    var limit by mutableIntStateOf(0)          // حد السرعة MB/s (0 = بدون)
+    var subsMode by mutableIntStateOf(0)       // 0 تضمين، 1 ملف منفصل
+    var organize by mutableIntStateOf(0)       // 0 عادي، 1 حسب الموقع، 2 حسب القناة
+    var folder by mutableStateOf("Grab")
+    var saveThumb by mutableStateOf(false)
+    var saveDesc by mutableStateOf(false)
+    var shareQuick by mutableStateOf(false)   // من نافذة المشاركة: ابدأ التحميل فورًا بالإعدادات الافتراضية
 
     fun load(c: Context) {
         sp = c.getSharedPreferences("p", 0)
         wifiOnly = sp.getBoolean("w", false); subs = sp.getBoolean("s", false)
         concurrent = sp.getInt("c", 2); audioFmt = sp.getString("a", "m4a") ?: "m4a"
+        shareQuick = sp.getBoolean("q", false)
+        limit = sp.getInt("l", 0); subsMode = sp.getInt("sm", 0); organize = sp.getInt("o", 0)
+        folder = sp.getString("f", "Grab") ?: "Grab"; saveThumb = sp.getBoolean("th", false); saveDesc = sp.getBoolean("de", false)
     }
     // آخر رابط كتبته/لصقته — بيفضل محفوظ حتى لو التطبيق اتقفل
     var draft: String
         get() = sp.getString("d", "") ?: ""
         set(v) { sp.edit().putString("d", v).apply() }
 
+    var lastClip: String
+        get() = sp.getString("lc", "") ?: ""
+        set(v) { sp.edit().putString("lc", v).apply() }
+
     fun save() {
-        sp.edit().putBoolean("w", wifiOnly).putBoolean("s", subs).putInt("c", concurrent).putString("a", audioFmt).apply()
+        sp.edit().putBoolean("w", wifiOnly).putBoolean("s", subs).putInt("c", concurrent).putString("a", audioFmt).putBoolean("q", shareQuick)
+            .putInt("l", limit).putInt("sm", subsMode).putInt("o", organize).putString("f", folder)
+            .putBoolean("th", saveThumb).putBoolean("de", saveDesc).apply()
     }
 }
 
@@ -154,6 +182,23 @@ object Repo {
         }
     } catch (_: Throwable) { false }
 
+    // تسجيل الدخول من جوه التطبيق: بناخد الكوكيز من الـ WebView ونكتبها بصيغة Netscape
+    fun saveWebCookies(): Boolean = try {
+        val cm = android.webkit.CookieManager.getInstance()
+        cm.flush()
+        val sb = StringBuilder("# Netscape HTTP Cookie File\n")
+        var n = 0
+        listOf("https://www.youtube.com" to ".youtube.com", "https://accounts.google.com" to ".google.com",
+            "https://www.google.com" to ".google.com").forEach { (u, d) ->
+            cm.getCookie(u)?.split(";")?.forEach { c ->
+                val kv = c.trim(); val i = kv.indexOf('=')
+                if (i > 0) { sb.append("$d\tTRUE\t/\tTRUE\t2147483647\t${kv.substring(0, i)}\t${kv.substring(i + 1)}\n"); n++ }
+            }
+        }
+        if (n == 0 || !sb.contains("\tSID\t")) false
+        else { cookieFile.writeText(sb.toString()); hasCookies.value = true; true }
+    } catch (_: Throwable) { false }
+
     fun clearCookies() { try { cookieFile.delete() } catch (_: Throwable) {}; hasCookies.value = false }
 
     // ───── استراتيجيات يوتيوب: بنجرّب واحدة ورا التانية لحد ما واحدة تنجح ─────
@@ -161,11 +206,13 @@ object Repo {
         "youtube:player_client=android_vr",     // 0: من غير JS، بس أحيانًا بيرجّع 403 أو 360p بس
         "youtube:player_client=android",        // 1
         "youtube:player_client=tv",             // 2
-        null                                    // 3: الافتراضي
+        null,                                   // 3: الافتراضي
+        "youtube:player_client=mweb",           // 4
+        "youtube:player_client=web_safari"      // 5
     )
     // ترتيب المحاولات: لو فيه كوكيز نبدأ بالعملاء اللي بيدعموها
     private fun order(url: String): List<Int> =
-        if (!isYt(url)) listOf(0, 1) else if (hasCookies.value) listOf(2, 3, 1, 0) else listOf(0, 1, 2, 3)
+        if (!isYt(url)) listOf(0, 1) else if (hasCookies.value) listOf(2, 3, 4, 1, 0, 5) else listOf(0, 1, 2, 3, 4, 5)
 
     // أخطاء مفيش فايدة من تكرارها
     private fun fatal(e: Throwable): Boolean {
@@ -177,13 +224,20 @@ object Repo {
         val m = e.message ?: return false
         return listOf("Unable to resolve host", "timed out", "Network is unreachable", "Connection reset").any { m.contains(it, true) }
     }
+    private fun subErr(e: Throwable): Boolean {
+        val m = e.message ?: return false
+        return m.contains("subtitle", true) || m.contains("timedtext", true)
+    }
     private fun isYt(u: String) = u.contains("youtube.com", true) || u.contains("youtu.be", true) || u.contains("youtube-nocookie.com", true)
 
     private fun common(r: YoutubeDLRequest, strat: Int, url: String) {
-        r.addOption("--socket-timeout", "10")
-        r.addOption("--retries", "3")
-        r.addOption("--fragment-retries", "5")
-        r.addOption("--extractor-retries", "1")
+        r.addOption("--socket-timeout", "15")
+        r.addOption("--retries", "5")
+        r.addOption("--fragment-retries", "10")
+        r.addOption("--extractor-retries", "2")
+        r.addOption("--retry-sleep", "linear=1::2")
+        r.addOption("--force-ipv4")                 // IPv6 على الموبايل سبب رئيسي لـ 403/429 المتقطع
+        r.addOption("--http-chunk-size", "10M")     // تحميل على أجزاء بيتفادى تقييد السرعة/القطع من يوتيوب
         if (isYt(url)) ytArgs.getOrNull(strat)?.let { r.addOption("--extractor-args", it) }
         if (hasCookies.value && cookieFile.exists()) r.addOption("--cookies", cookieFile.absolutePath)
     }
@@ -191,7 +245,7 @@ object Repo {
     suspend fun fetch(url: String): VideoInfo = withContext(Dispatchers.IO) {
         ensureEngine()
         var last: Throwable? = null
-        val tries = order(url).take(if (isYt(url)) 2 else 1)   // المعاينة لازم تكون سريعة
+        val tries = order(url).take(if (isYt(url)) 3 else 2)   // المعاينة لازم تكون سريعة
         for (i in tries) {
             try {
                 return@withContext YoutubeDL.getInstance().getInfo(
@@ -210,40 +264,75 @@ object Repo {
         t.job = scope.launch { try { sem.withPermit { run(t) } } finally { saveTasks() } }
     }
 
-    fun cancel(t: Task) {
-        t.st = St.Canceled
+    private fun kill(t: Task) {
         try { YoutubeDL.getInstance().destroyProcessById(t.id) } catch (_: Throwable) {}
-        t.job?.cancel()
+        try { YoutubeDL.getInstance().destroyProcessById(t.id + "_s") } catch (_: Throwable) {}
+    }
+
+    fun cancel(t: Task) {
+        t.keep = false; t.msg = ""; t.st = St.Canceled
+        kill(t); t.job?.cancel()
         saveTasks()
     }
 
-    fun drop(t: Task) { tasks.remove(t); saveTasks() }
+    // إيقاف مؤقت: بيوقف العملية لكن بيسيب الجزء المحمّل، والاستئناف بيكمّل منه
+    fun pause(t: Task) {
+        t.keep = true; t.msg = "متوقف مؤقتًا"; t.st = St.Canceled
+        kill(t); t.job?.cancel()
+        saveTasks()
+    }
+
+    fun drop(t: Task) { tasks.remove(t); try { partialDir(t).deleteRecursively() } catch (_: Throwable) {}; saveTasks() }
+
+    fun retryAll(c: Context) { tasks.filter { it.st == St.Failed || it.st == St.Canceled }.forEach { enqueue(c, it) } }
+    fun clearFailed() {
+        tasks.filter { it.st == St.Failed || it.st == St.Canceled }.forEach { try { partialDir(it).deleteRecursively() } catch (_: Throwable) {} }
+        tasks.removeAll { it.st == St.Failed || it.st == St.Canceled }; saveTasks()
+    }
+
+    private fun partialDir(t: Task) = File(app.filesDir, "partial/${t.id}")
 
     private suspend fun run(t: Task) {
         if (t.st == St.Canceled) return
         val cm = app.getSystemService(ConnectivityManager::class.java)
         if (Prefs.wifiOnly && cm.isActiveNetworkMetered) { t.st = St.Failed; t.msg = "وضع الواي فاي فقط مفعّل"; return }
-        t.st = St.Running
-        val dir = File(app.cacheDir, "dl/${t.id}").apply { mkdirs() }
+        t.st = St.Running; t.keep = false
+        val dir = partialDir(t).apply { mkdirs() }
         try {
             ensureEngine()
+            // الروابط اللي اتضافت بدون معاينة (دفعات/مشاركة سريعة): نجيب العنوان والصورة في الخلفية
+            if (t.title == t.url && !t.playlist) scope.launch {
+                try {
+                    val i = fetch(t.url)
+                    i.title?.let { t.title = it }
+                    if (t.thumb == null) t.thumb = i.thumbnail
+                    t.uploader = i.uploader
+                    saveTasks()
+                } catch (_: Throwable) {}
+            }
             val plan = order(t.url).toMutableList()
             var idx = 0; var updated = updatedThisSession; var last: Throwable? = null; var ok = false; var netTries = 0
+            var useSubs = t.subs && Prefs.subsMode == 0
+            var curH = t.height; var round2 = false; var okS = plan.first()
             while (idx < plan.size) {
                 val s = plan[idx++]
                 if (t.st == St.Canceled) return
                 t.msg = if (idx > 1) "بجرّب طريقة تانية ($idx/${plan.size})…" else ""
-                try { attempt(t, dir, s); ok = true; break }
+                try { attempt(t, dir, s, useSubs, curH); ok = true; okS = s; break }
                 catch (e: CancellationException) { throw e }
                 catch (e: Throwable) {
                     if (t.st == St.Canceled) return
                     last = e
-                    dir.deleteRecursively(); dir.mkdirs()
-                    t.progress = 0f
+                    // أخطاء النت: بنسيب الجزء المحمّل عشان نكمّل منه. غير كده بنبدأ نضيف
+                    if (!netErr(e)) { dir.deleteRecursively(); dir.mkdirs(); t.progress = 0f }
                     when {
                         fatal(e) -> break
+                        // فشل الترجمة (429 غالبًا) ما يوقّفش التحميل: نكمّل من غيرها
+                        useSubs && subErr(e) -> { useSubs = false; t.msg = "الترجمة مش متاحة، بحمّل من غيرها…"; plan.add(idx, s); delay(500) }
+                        curH > 0 && (e.message ?: "").contains("format is not available", true) ->
+                            { curH = lowerQ(curH); t.msg = "الجودة مش متاحة، بجرّب أقل…"; plan.add(idx, s) }
                         netErr(e) -> {
-                            if (++netTries > 2) break
+                            if (++netTries > 3) break
                             t.msg = "مشكلة في النت… بحاول تاني"; plan.add(idx, s); delay(2000)
                         }
                         idx == plan.size && !updated -> {
@@ -251,25 +340,42 @@ object Repo {
                             t.msg = "بيحدّث المحرك ويحاول تاني…"
                             updateBlocking(); plan.addAll(order(t.url).take(2))
                         }
-                        else -> delay(300)
+                        idx == plan.size && !round2 -> {   // لفّة تانية، وبجودة أقل لو كانت محددة
+                            round2 = true
+                            if (curH > 0) { curH = lowerQ(curH); t.msg = "بجرّب جودة أقل…" } else t.msg = "بحاول تاني بعد ثواني…"
+                            delay(4000); plan.addAll(order(t.url))
+                        }
+                        else -> delay(500)
                     }
                 }
             }
             if (!ok) throw last ?: Exception("فشل التحميل")
+            // الترجمة كملف منفصل: خطوة بعد الفيديو، وفشلها ما يأثرش على التحميل
+            if (t.subs && Prefs.subsMode == 1 && !t.audio) {
+                t.msg = "بجيب الترجمة…"
+                try { subsOnly(t, dir, okS) } catch (e: CancellationException) { throw e } catch (_: Throwable) {}
+            }
             finish(t, dir)
         } catch (e: CancellationException) {
             if (t.st != St.Canceled) { t.st = St.Failed; t.msg = "اتوقف" }
         } catch (e: Throwable) {
             if (t.st != St.Canceled) { t.st = St.Failed; t.msg = clean(e) }
-        } finally { dir.deleteRecursively() }
+        } finally {
+            if (t.st == St.Done || (t.st == St.Canceled && !t.keep)) dir.deleteRecursively()
+        }
     }
 
-    private fun attempt(t: Task, dir: File, strat: Int) {
+    private fun attempt(t: Task, dir: File, strat: Int, withSubs: Boolean, height: Int) {
         val r = YoutubeDLRequest(t.url)
         r.addOption("-o", "${dir.absolutePath}/%(title).80s.%(ext)s")
-        r.addOption("--no-mtime"); common(r, strat, t.url)
+        r.addOption("--no-mtime"); r.addOption("--continue"); common(r, strat, t.url)
+        if (Prefs.limit > 0) r.addOption("--limit-rate", "${Prefs.limit}M")
         r.addOption("--concurrent-fragments", "8")
         r.addOption(if (t.playlist) "--yes-playlist" else "--no-playlist")
+        if (Prefs.saveThumb) { r.addOption("--write-thumbnail"); r.addOption("--convert-thumbnails", "jpg") }
+        if (Prefs.saveDesc) r.addOption("--write-description")
+        if (!t.playlist && (t.clipStart.isNotBlank() || t.clipEnd.isNotBlank()))
+            r.addOption("--download-sections", "*${t.clipStart.ifBlank { "0" }}-${t.clipEnd.ifBlank { "inf" }}")
         if (t.audio) {
             // m4a: بيتحمّل جاهز من غير إعادة ترميز (أسرع بكتير من mp3 على الموبايل)
             r.addOption("-f", if (Prefs.audioFmt == "m4a") "ba[ext=m4a]/ba/b" else "ba/b")
@@ -277,9 +383,9 @@ object Repo {
             if (Prefs.audioFmt == "mp3") r.addOption("--audio-quality", "2")
         } else {
             r.addOption("-f", "bv*+ba/b")
-            r.addOption("-S", if (t.height > 0) "res:${t.height},ext:mp4:m4a" else "ext:mp4:m4a")
+            r.addOption("-S", if (height > 0) "res:$height,ext:mp4:m4a" else "ext:mp4:m4a")
             r.addOption("--merge-output-format", "mp4")
-            if (t.subs) {
+            if (withSubs) {
                 r.addOption("--write-subs"); r.addOption("--write-auto-subs")
                 r.addOption("--sub-langs", "ar.*,en.*"); r.addOption("--embed-subs")
             }
@@ -290,13 +396,33 @@ object Repo {
         })
     }
 
+    private fun subsOnly(t: Task, dir: File, strat: Int) {
+        val r = YoutubeDLRequest(t.url)
+        r.addOption("-o", "${dir.absolutePath}/%(title).80s.%(ext)s")
+        r.addOption("--skip-download"); common(r, strat, t.url)
+        r.addOption(if (t.playlist) "--yes-playlist" else "--no-playlist")
+        r.addOption("--write-subs"); r.addOption("--write-auto-subs")
+        r.addOption("--sub-langs", "ar.*,en.*"); r.addOption("--convert-subs", "srt")
+        r.addOption("--sleep-subtitles", "2")
+        YoutubeDL.getInstance().execute(r, t.id + "_s")
+    }
+
+    private val intermediate = Regex("""\.f\d+(-\w+)?\.[A-Za-z0-9]+$""")
+    private val imgExt = setOf("jpg", "jpeg", "png", "webp")
+    private val txtExt = setOf("srt", "vtt", "description")
+
     private fun finish(t: Task, dir: File) {
-        val files = dir.walkTopDown().filter { it.isFile && it.extension.lowercase() in media }.toList()
+        val all = dir.walkTopDown().filter { it.isFile }.toList()
+        val files = all.filter { it.extension.lowercase() in media && !intermediate.containsMatchIn(it.name) }
         if (files.isEmpty()) throw Exception("ما اتنتجش ملف")
+        val sub = subFolder(t)
         files.forEach { f ->
-            val u = save(f) ?: return@forEach
+            val u = save(f, sub) ?: return@forEach
             val isAudio = (MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "").startsWith("audio")
             library.add(0, Item(f.nameWithoutExtension, t.thumb, u, isAudio, t.url))
+        }
+        all.filter { it.extension.lowercase().let { e -> e in imgExt || e in txtExt } }.forEach {
+            try { save(it, sub) } catch (_: Throwable) {}
         }
         saveLib()
         t.progress = 1f; t.st = St.Done
@@ -304,16 +430,44 @@ object Repo {
         tasks.remove(t)
     }
 
-    private fun save(f: File): String? {
-        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "video/mp4"
-        val isAudio = mime.startsWith("audio")
-        val col = if (isAudio) MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                  else MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    private fun safe(s: String) = s.replace(Regex("""[\\/:*?"<>|\n\r]"""), "_").trim().take(40)
+
+    fun siteOf(u: String): String {
+        val h = try { Uri.parse(u).host ?: "" } catch (_: Throwable) { "" }.lowercase()
+        if (h.endsWith("youtu.be") || h.contains("youtube")) return "YouTube"
+        val p = h.removePrefix("www.").removePrefix("m.").split(".").filter { it.isNotEmpty() }
+        val n = if (p.size >= 2) p[p.size - 2] else p.firstOrNull() ?: "Other"
+        return n.replaceFirstChar { it.uppercase() }
+    }
+
+    private fun subFolder(t: Task): String {
+        val root = safe(Prefs.folder).ifBlank { "Grab" }
+        val extra = when (Prefs.organize) {
+            1 -> siteOf(t.url)
+            2 -> t.uploader?.let { safe(it) }?.ifBlank { null } ?: siteOf(t.url)
+            else -> ""
+        }
+        return if (extra.isEmpty()) root else "$root/$extra"
+    }
+
+    private fun save(f: File, sub: String): String? {
+        val ext = f.extension.lowercase()
+        val mime = when (ext) {
+            "srt" -> "application/x-subrip"; "vtt" -> "text/vtt"; "description" -> "text/plain"
+            else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "video/mp4"
+        }
+        val vol = MediaStore.VOLUME_EXTERNAL_PRIMARY
+        val (col, base) = when {
+            ext in imgExt -> MediaStore.Images.Media.getContentUri(vol) to Environment.DIRECTORY_PICTURES
+            ext in txtExt -> MediaStore.Downloads.getContentUri(vol) to Environment.DIRECTORY_DOWNLOADS
+            mime.startsWith("audio") -> MediaStore.Audio.Media.getContentUri(vol) to Environment.DIRECTORY_MUSIC
+            else -> MediaStore.Video.Media.getContentUri(vol) to Environment.DIRECTORY_MOVIES
+        }
+        val name = if (ext == "description") f.nameWithoutExtension + ".txt" else f.name
         val cv = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, f.name)
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, mime)
-            put(MediaStore.MediaColumns.RELATIVE_PATH,
-                (if (isAudio) Environment.DIRECTORY_MUSIC else Environment.DIRECTORY_MOVIES) + "/Grab")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "$base/$sub")
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val u = app.contentResolver.insert(col, cv) ?: return null
@@ -338,6 +492,7 @@ object Repo {
                 val o = a.getJSONObject(i)
                 val t = Task(o.getString("id"), o.getString("url"), o.getString("t"), o.optString("th").ifEmpty { null },
                     o.getBoolean("a"), o.getInt("h"), o.getBoolean("s"), o.getBoolean("p"))
+                t.uploader = o.optString("u").ifEmpty { null }; t.clipStart = o.optString("cs"); t.clipEnd = o.optString("ce")
                 val saved = try { St.valueOf(o.getString("st")) } catch (_: Throwable) { St.Failed }
                 if (saved == St.Canceled || saved == St.Failed) { t.st = saved; t.msg = o.optString("m") }
                 else { t.st = St.Failed; t.msg = "اتوقف لما التطبيق اتقفل — اضغط إعادة" }
@@ -351,7 +506,8 @@ object Repo {
             tasks.toList().forEach { t ->
                 a.put(JSONObject().put("id", t.id).put("url", t.url).put("t", t.title).put("th", t.thumb ?: "")
                     .put("a", t.audio).put("h", t.height).put("s", t.subs).put("p", t.playlist)
-                    .put("st", t.st.name).put("m", t.msg))
+                    .put("st", t.st.name).put("m", t.msg)
+                    .put("u", t.uploader ?: "").put("cs", t.clipStart).put("ce", t.clipEnd))
             }
             taskFile.writeText(a.toString())
         } catch (_: Throwable) {}
@@ -383,9 +539,23 @@ class DownloadService : Service() {
     override fun onBind(i: Intent?): IBinder? = null
 
     override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
+        // أزرار الإشعار
+        when (i?.action) {
+            "grab.CANCEL" -> { Repo.tasks.filter { it.st == St.Running || it.st == St.Queued }.forEach { Repo.cancel(it) }; return START_NOT_STICKY }
+            "grab.PAUSE" -> { Repo.tasks.filter { it.st == St.Running || it.st == St.Queued }.forEach { Repo.pause(it) }; return START_NOT_STICKY }
+        }
         val nm = getSystemService(NotificationManager::class.java)
+        fun act(a: String, label: String, icon: Int): Notification.Action {
+            val pi = PendingIntent.getService(this, a.hashCode(), Intent(this, DownloadService::class.java).setAction(a),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            return Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(this, icon), label, pi).build()
+        }
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         fun build(p: Int, txt: String) = Notification.Builder(this, "dl")
             .setSmallIcon(android.R.drawable.stat_sys_download).setContentTitle("Grab").setContentText(txt)
+            .setContentIntent(open)
+            .addAction(act("grab.PAUSE", "إيقاف مؤقت", android.R.drawable.ic_media_pause))
+            .addAction(act("grab.CANCEL", "إلغاء", android.R.drawable.ic_menu_close_clear_cancel))
             .setOnlyAlertOnce(true).setOngoing(true).setProgress(100, p, p == 0).build()
         try { startForeground(1, build(0, "جاري التحميل…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) }
         catch (_: Throwable) { stopSelf(); return START_NOT_STICKY }

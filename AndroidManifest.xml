@@ -19,12 +19,26 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+
+        <!-- نافذة المشاركة المنبثقة: مهمة (task) منفصلة فمش بتفتح التطبيق الأساسي -->
+        <activity android:name=".ShareActivity" android:exported="true"
+            android:label="Grab"
+            android:theme="@style/Theme.Grab.Popup"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <activity android:name=".PlayerActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" />
+        <activity android:name=".LoginActivity" android:exported="false" />
 
         <service android:name=".DownloadService" android:exported="false"
             android:foregroundServiceType="dataSync" />
