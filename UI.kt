@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -41,6 +42,8 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -96,6 +99,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextStyle
@@ -447,39 +451,68 @@ private fun EmptyState(icon: ImageVector, title: String, body: String) {
 }
 
 @Composable
-private fun PageList(bottom: Dp, content: LazyListScope.() -> Unit) =
-    LazyColumn(Modifier.fillMaxSize().imePadding(),
+private fun PageList(bottom: Dp, state: LazyListState = rememberLazyListState(), content: LazyListScope.() -> Unit) =
+    LazyColumn(Modifier.fillMaxSize().imePadding(), state = state,
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = bottom), content = content)
 
 // ═══════════════════════════ الهيكل + شريط التنقل العايم ═══════════════════════════
 
 private class NavTab(val label: String, val on: ImageVector, val off: ImageVector)
 
+private val LocalSnack = staticCompositionLocalOf<SnackbarHostState> { error("no snackbar host") }
+
 @Composable
 fun App() {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val inc by Incoming.v.collectAsState()
     LaunchedEffect(inc) { if (inc != null) tab = 0 }
+    BackHandler(enabled = tab != 0) { tab = 0 }
     val cs = MaterialTheme.colorScheme
+    val ctx = LocalContext.current
+    val snack = remember { SnackbarHostState() }
     val imeOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val bottom = if (imeOpen) 16.dp else WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 120.dp
 
-    Box(Modifier.fillMaxSize().background(cs.surface)) {
-        Crossfade(tab, Modifier.fillMaxSize(), label = "tab") {
-            when (it) { 0 -> HomeScreen(bottom); 1 -> LibraryScreen(bottom); else -> SettingsScreen(bottom) }
-        }
-        AnimatedVisibility(!imeOpen, Modifier.align(Alignment.BottomCenter),
-            enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
-            Box(Modifier.fillMaxWidth()
-                .background(Brush.verticalGradient(listOf(Color.Transparent, cs.surface)))
-                .navigationBarsPadding().padding(top = 36.dp, bottom = 14.dp),
-                contentAlignment = Alignment.Center) { FloatingNav(tab) { tab = it } }
+    // لما تحميل يخلص: رسالة "تم التحميل" مع زر فتح، ونقطة على تبويب المكتبة لو مش فاتحها
+    var unseen by remember { mutableIntStateOf(0) }
+    var lastSize by remember { mutableIntStateOf(Repo.library.size) }
+    val libSize = Repo.library.size
+    LaunchedEffect(libSize) {
+        if (libSize > lastSize) {
+            val it = Repo.library.firstOrNull()
+            if (tab != 1) unseen += libSize - lastSize
+            lastSize = libSize
+            if (it != null) {
+                snack.currentSnackbarData?.dismiss()
+                val r = snack.showSnackbar("تم التحميل: ${it.title.take(40)}", "فتح", duration = SnackbarDuration.Long)
+                if (r == SnackbarResult.ActionPerformed) openItem(ctx, it)
+            }
+        } else lastSize = libSize
+    }
+    LaunchedEffect(tab) { if (tab == 1) unseen = 0 }
+
+    CompositionLocalProvider(LocalSnack provides snack) {
+        Surface(Modifier.fillMaxSize(), color = cs.surface, contentColor = cs.onSurface) {
+            Box(Modifier.fillMaxSize()) {
+                Crossfade(tab, Modifier.fillMaxSize(), label = "tab") {
+                    when (it) { 0 -> HomeScreen(bottom); 1 -> LibraryScreen(bottom); else -> SettingsScreen(bottom) }
+                }
+                AnimatedVisibility(!imeOpen, Modifier.align(Alignment.BottomCenter),
+                    enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
+                    Box(Modifier.fillMaxWidth()
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, cs.surface)))
+                        .navigationBarsPadding().padding(top = 36.dp, bottom = 14.dp),
+                        contentAlignment = Alignment.Center) { FloatingNav(tab, unseen) { tab = it } }
+                }
+                SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, bottom = if (imeOpen) 12.dp else 100.dp))
+            }
         }
     }
 }
 
 @Composable
-private fun FloatingNav(sel: Int, on: (Int) -> Unit) {
+private fun FloatingNav(sel: Int, badge: Int, on: (Int) -> Unit) {
     val cs = MaterialTheme.colorScheme
     val hap = LocalHapticFeedback.current
     val items = remember {
@@ -500,7 +533,10 @@ private fun FloatingNav(sel: Int, on: (Int) -> Unit) {
                     }
                     .padding(horizontal = 20.dp).animateContentSize(spring(0.8f, 400f)),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Icon(if (a) t.on else t.off, t.label, tint = if (a) cs.onPrimaryContainer else cs.onSurfaceVariant)
+                    val ic: @Composable () -> Unit = {
+                        Icon(if (a) t.on else t.off, t.label, tint = if (a) cs.onPrimaryContainer else cs.onSurfaceVariant)
+                    }
+                    if (i == 1 && badge > 0 && !a) BadgedBox(badge = { Badge { Text("$badge") } }) { ic() } else ic()
                     AnimatedVisibility(a, enter = fadeIn() + expandHorizontally(), exit = fadeOut() + shrinkHorizontally()) {
                         Text(t.label, Modifier.padding(start = 10.dp), color = cs.onPrimaryContainer,
                             style = MaterialTheme.typography.titleSmall, maxLines = 1)
@@ -514,17 +550,49 @@ private fun FloatingNav(sel: Int, on: (Int) -> Unit) {
 // ═══════════════════════════ الرئيسية ═══════════════════════════
 
 @Composable
-private fun HomeHero() {
+private fun HomeHero(compact: Boolean) {
     val cs = MaterialTheme.colorScheme
     val bob by rememberInfiniteTransition(label = "bob").animateFloat(-5f, 5f,
         infiniteRepeatable(tween(1900, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "b")
-    Row(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 28.dp, bottom = 28.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Grab", style = MaterialTheme.typography.titleMedium, color = cs.primary)
-            Text("الصق الرابط،\nوخلّيها علينا", style = MaterialTheme.typography.displaySmall)
+    if (compact) {
+        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 20.dp, bottom = 16.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Column {
+                Text("Grab", style = MaterialTheme.typography.titleMedium, color = cs.primary)
+                Text("التحميلات", style = MaterialTheme.typography.headlineMedium)
+            }
+            CookieIcon(IcDownload, 60.dp, cs.primary, cs.onPrimary)
         }
-        CookieIcon(IcDownload, 104.dp, cs.primary, cs.onPrimary, Modifier.offset(y = bob.dp))
+    } else {
+        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 28.dp, bottom = 28.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Grab", style = MaterialTheme.typography.titleMedium, color = cs.primary)
+                Text("الصق الرابط،\nوخلّيها علينا", style = MaterialTheme.typography.displaySmall)
+            }
+            CookieIcon(IcDownload, 104.dp, cs.primary, cs.onPrimary, Modifier.offset(y = bob.dp))
+        }
+    }
+}
+
+@Composable
+private fun HowTo() {
+    val cs = MaterialTheme.colorScheme
+    val steps = listOf(
+        "افتح الفيديو في يوتيوب أو إنستجرام أو فيسبوك أو تيك توك",
+        "اضغط مشاركة واختار Grab، أو انسخ الرابط والصقه فوق",
+        "اختار الجودة أو الصوت واضغط تحميل"
+    )
+    Column(Modifier.fillMaxWidth().padding(top = 36.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Text("إزاي تستخدمه؟", style = MaterialTheme.typography.titleLarge)
+        steps.forEachIndexed { i, t ->
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Box(Modifier.size(40.dp).clip(CircleShape).background(cs.primaryContainer), contentAlignment = Alignment.Center) {
+                    Text("${i + 1}", color = cs.onPrimaryContainer, style = MaterialTheme.typography.titleMedium)
+                }
+                Text(t, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+            }
+        }
     }
 }
 
@@ -533,7 +601,10 @@ fun HomeScreen(bottom: Dp) {
     val ctx = LocalContext.current
     val hap = LocalHapticFeedback.current
     val clip = LocalClipboardManager.current
+    val focus = LocalFocusManager.current
+    val snack = LocalSnack.current
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
     val cs = MaterialTheme.colorScheme
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     var url by remember { mutableStateOf(Prefs.draft) }
@@ -549,17 +620,28 @@ fun HomeScreen(bottom: Dp) {
     val ready by Repo.ready
     val engineSt by Repo.status
 
+    BackHandler(enabled = info != null) { info = null }
+
     fun newTask(title: String, thumb: String?, pl: Boolean) =
         Task(System.nanoTime().toString(), url.trim(), title, thumb, kind == 1, h, subs, pl)
 
+    fun added() {
+        scope.launch {
+            snack.currentSnackbarData?.dismiss()
+            launch { listState.animateScrollToItem(0) }
+            snack.showSnackbar("بدأ التحميل", duration = SnackbarDuration.Short)
+        }
+    }
+
     fun direct() {
         val u = url.trim(); if (u.isEmpty()) return
-        Repo.enqueue(ctx, newTask(u, null, playlist)); url = ""; err = ""; info = null
+        Repo.enqueue(ctx, newTask(u, null, playlist)); url = ""; err = ""; info = null; added()
     }
 
     fun go() {
         val u = url.trim()
         if (u.isEmpty()) return
+        focus.clearFocus()
         err = ""; info = null
         if (playlist) { direct(); return }
         loading = true
@@ -570,13 +652,15 @@ fun HomeScreen(bottom: Dp) {
     }
     LaunchedEffect(inc) { inc?.let { url = it; Incoming.v.value = null; go() } }
 
+    val compact = Repo.tasks.isNotEmpty() || info != null || loading
+
     // توهّج لوني ناعم ثابت في أعلى الشاشة
     Box(Modifier.fillMaxSize().drawBehind {
         drawRect(Brush.radialGradient(listOf(cs.primaryContainer.copy(alpha = 0.85f), Color.Transparent),
             center = Offset(size.width * (if (rtl) 0.12f else 0.88f), size.height * 0.04f), radius = size.width * 0.95f))
     }) {
-        PageList(bottom) {
-            item { HomeHero() }
+        PageList(bottom, listState) {
+            item { Box(Modifier.animateContentSize()) { HomeHero(compact) } }
             item {
                 TextField(
                     value = url, onValueChange = { url = it }, singleLine = true,
@@ -587,11 +671,13 @@ fun HomeScreen(bottom: Dp) {
                     leadingIcon = { Icon(IcLink, null, tint = cs.onSurfaceVariant) },
                     trailingIcon = {
                         if (url.isEmpty()) Box(Modifier.padding(end = 8.dp).clip(CircleShape).background(cs.primaryContainer)
-                            .clickable { clip.getText()?.text?.let { url = urlOf(it) } }
+                            .clickable { clip.getText()?.text?.let { url = urlOf(it); go() } }
                             .padding(horizontal = 16.dp, vertical = 9.dp)) {
-                            Text("لصق", color = cs.onPrimaryContainer, style = MaterialTheme.typography.labelLarge)
-                        } else IconButton({ url = "" }) { Icon(Icons.Rounded.Close, "مسح") }
+                            Text("لصق وجلب", color = cs.onPrimaryContainer, style = MaterialTheme.typography.labelLarge)
+                        } else IconButton({ url = ""; err = ""; info = null }) { Icon(Icons.Rounded.Close, "مسح") }
                     },
+                    supportingText = if (url.isNotBlank() && !url.trim().startsWith("http", true))
+                        ({ Text("ده مش شكل رابط — هحاول معاه برضه") }) else null,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(onGo = { go() })
                 )
@@ -624,7 +710,10 @@ fun HomeScreen(bottom: Dp) {
                         Icon(Icons.Rounded.Warning, null, Modifier.size(22.dp), tint = cs.error)
                         Text(err, style = MaterialTheme.typography.bodyMedium, color = cs.error)
                     }
-                    TextButton({ direct() }) { Text("حمّل مباشرة") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton({ go() }) { Text("حاول تاني") }
+                        TextButton({ direct() }) { Text("حمّل مباشرة") }
+                    }
                 }
             }
 
@@ -657,7 +746,7 @@ fun HomeScreen(bottom: Dp) {
                         } else SettingRow(IcMusic, "الصيغة: ${Prefs.audioFmt.uppercase()}", "تتغير من الإعدادات")
                         BigButton("تحميل", icon = IcDownload) {
                             hap.performHapticFeedback(HapticFeedbackType.LongPress)
-                            Repo.enqueue(ctx, newTask(i.title ?: url, i.thumbnail, false)); info = null; url = ""
+                            Repo.enqueue(ctx, newTask(i.title ?: url, i.thumbnail, false)); info = null; url = ""; added()
                         }
                     }
                 }
@@ -674,10 +763,7 @@ fun HomeScreen(bottom: Dp) {
                     }
                 }
                 items(Repo.tasks, key = { it.id }) { TaskRow(it, Modifier.animateItem()) }
-            } else if (info == null && err.isEmpty()) item {
-                EmptyState(IcDownload, "جاهز للتحميل",
-                    "شارك أي رابط من يوتيوب أو إنستجرام أو فيسبوك أو تيك توك لتطبيق Grab وهيبدأ فورًا.")
-            }
+            } else if (info == null && err.isEmpty() && !loading) item { HowTo() }
         }
     }
 }
@@ -753,6 +839,7 @@ fun LibraryScreen(bottom: Dp) {
     val cs = MaterialTheme.colorScheme
     var q by remember { mutableStateOf("") }
     var f by remember { mutableIntStateOf(0) }
+    var del by remember { mutableStateOf<Item?>(null) }
     val list = Repo.library.filter { (f == 0 || (f == 1 && !it.audio) || (f == 2 && it.audio)) && it.title.contains(q, true) }
     val full: androidx.compose.foundation.lazy.grid.LazyGridItemSpanScope.() -> GridItemSpan = { GridItemSpan(maxLineSpan) }
 
@@ -799,10 +886,20 @@ fun LibraryScreen(bottom: Dp) {
                     Text(if (i.audio) "صوت" else "فيديو", Modifier.weight(1f).padding(horizontal = 4.dp),
                         style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
                     IconButton({ shareItem(ctx, i) }, Modifier.size(36.dp)) { Icon(Icons.Rounded.Share, "مشاركة", Modifier.size(20.dp)) }
-                    IconButton({ Repo.remove(i) }, Modifier.size(36.dp)) { Icon(Icons.Rounded.Delete, "حذف", Modifier.size(20.dp)) }
+                    IconButton({ del = i }, Modifier.size(36.dp)) { Icon(Icons.Rounded.Delete, "حذف", Modifier.size(20.dp)) }
                 }
             }
         }
+    }
+
+    del?.let { d ->
+        AlertDialog(
+            onDismissRequest = { del = null },
+            title = { Text("حذف الملف؟") },
+            text = { Text("\"${d.title}\"\nهيتمسح من جهازك نهائيًا.", maxLines = 4, overflow = TextOverflow.Ellipsis) },
+            confirmButton = { TextButton({ Repo.remove(d); del = null }) { Text("حذف", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton({ del = null }) { Text("إلغاء") } }
+        )
     }
 }
 
