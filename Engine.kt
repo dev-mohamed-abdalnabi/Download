@@ -79,14 +79,14 @@ object Repo {
                 FFmpeg.getInstance().init(app)
                 ready.value = true
                 if (System.currentTimeMillis() - Prefs.sp.getLong("u", 0) > 86_400_000) update()
-            } catch (e: Exception) { status.value = clean(e) }
+            } catch (e: Throwable) { status.value = clean(e) }
         }
     }
 
     fun clean(e: Throwable) =
-        (e.message ?: "error").lines().lastOrNull { it.isNotBlank() }?.take(140) ?: "error"
+        (e.message ?: e.javaClass.simpleName).lines().lastOrNull { it.isNotBlank() }?.take(140) ?: "error"
 
-    fun version(): String = try { YoutubeDL.version(app) ?: "" } catch (e: Exception) { "" }
+    fun version(): String = try { YoutubeDL.version(app) ?: "" } catch (e: Throwable) { "" }
 
     fun update() = scope.launch {
         status.value = "جاري تحديث المحرك…"
@@ -94,7 +94,7 @@ object Repo {
             val r = YoutubeDL.getInstance().updateYoutubeDL(app)
             Prefs.sp.edit().putLong("u", System.currentTimeMillis()).apply()
             status.value = if (r?.name == "DONE") "تم التحديث ✓" else "المحرك محدّث ✓"
-        } catch (e: Exception) { status.value = "فشل التحديث: " + clean(e) }
+        } catch (e: Throwable) { status.value = "فشل التحديث: " + clean(e) }
     }
 
     suspend fun fetch(url: String): VideoInfo = withContext(Dispatchers.IO) {
@@ -151,7 +151,7 @@ object Repo {
             t.progress = 1f; t.st = St.Done
             notifyDone(t)
             tasks.remove(t)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             if (t.st != St.Canceled) { t.st = St.Failed; t.msg = clean(e) }
         } finally { dir.deleteRecursively() }
     }

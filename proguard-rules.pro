@@ -1,9 +1,15 @@
 -keep class com.yausername.** { *; }
--keepnames class com.fasterxml.jackson.**
--keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-keep class com.fasterxml.jackson.databind.** { *; }
+-keep class com.fasterxml.jackson.annotation.** { *; }
+-keep class com.fasterxml.jackson.core.** { *; }
+-keep class org.apache.commons.compress.** { *; }
+-keep class org.apache.commons.io.** { *; }
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,RuntimeVisibleAnnotations
 -dontwarn com.fasterxml.jackson.**
 -dontwarn org.apache.commons.**
+-dontwarn org.tukaani.**
+-dontwarn com.github.luben.**
+-dontwarn org.brotli.**
 -dontwarn javax.**
 -dontwarn java.beans.**
 -assumenosideeffects class android.util.Log { public static *** d(...); public static *** v(...); public static *** i(...); }
--repackageclasses ''
