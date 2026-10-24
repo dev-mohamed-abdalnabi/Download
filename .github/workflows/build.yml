@@ -21,7 +21,7 @@ jobs:
           cp proguard-rules.pro app/proguard-rules.pro
           cp grab.jks app/grab.jks
           cp AndroidManifest.xml app/src/main/AndroidManifest.xml
-          cp Engine.kt MainActivity.kt UI.kt app/src/main/java/app/grab/
+          cp Engine.kt MainActivity.kt ShareActivity.kt LoginActivity.kt PlayerActivity.kt UI.kt app/src/main/java/app/grab/
           cp themes.xml colors.xml app/src/main/res/values/
           cp ic_fg.xml app/src/main/res/drawable/
           cp ic_launcher.xml app/src/main/res/mipmap-anydpi/
