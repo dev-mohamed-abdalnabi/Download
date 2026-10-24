@@ -10,21 +10,41 @@ import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -40,6 +60,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
@@ -52,32 +73,55 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.yausername.youtubedl_android.mapper.VideoInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.min
+import kotlin.math.sin
 
-// ───────────── الثيم: ألوان ديناميكية من خلفية الموبايل (أندرويد 12+) ─────────────
+// ═══════════════════════════ الثيم ═══════════════════════════
+// ألوان ديناميكية من خلفية الموبايل (أندرويد 12+)، وألوان احتياطية للأقدم
 
 private val LightFallback = lightColorScheme(
     primary = Color(0xFF0B57D0), onPrimary = Color.White,
@@ -115,10 +159,32 @@ private val DarkFallback = darkColorScheme(
     errorContainer = Color(0xFF93000A), onErrorContainer = Color(0xFFFFDAD6)
 )
 
-private val AppShapes = Shapes(
-    extraSmall = RoundedCornerShape(8.dp), small = RoundedCornerShape(12.dp),
-    medium = RoundedCornerShape(16.dp), large = RoundedCornerShape(24.dp),
-    extraLarge = RoundedCornerShape(32.dp)
+// خط Tajawal (بيتحمّل في الـBuild من جوجل فونتس ويتحط في res/font)
+private val AppFont = FontFamily(
+    Font(R.font.tajawal_regular, FontWeight.Normal),
+    Font(R.font.tajawal_medium, FontWeight.Medium),
+    Font(R.font.tajawal_bold, FontWeight.Bold),
+    Font(R.font.tajawal_extrabold, FontWeight.ExtraBold)
+)
+private fun TextStyle.f(w: FontWeight? = null) = copy(fontFamily = AppFont, fontWeight = w ?: fontWeight)
+
+private val T0 = Typography()
+private val AppType = Typography(
+    displayLarge = T0.displayLarge.f(FontWeight.ExtraBold),
+    displayMedium = T0.displayMedium.f(FontWeight.ExtraBold),
+    displaySmall = T0.displaySmall.copy(fontSize = 36.sp, lineHeight = 52.sp).f(FontWeight.ExtraBold),
+    headlineLarge = T0.headlineLarge.f(FontWeight.ExtraBold),
+    headlineMedium = T0.headlineMedium.f(FontWeight.ExtraBold),
+    headlineSmall = T0.headlineSmall.f(FontWeight.Bold),
+    titleLarge = T0.titleLarge.f(FontWeight.Bold),
+    titleMedium = T0.titleMedium.f(FontWeight.Bold),
+    titleSmall = T0.titleSmall.f(FontWeight.Bold),
+    bodyLarge = T0.bodyLarge.f(FontWeight.Normal),
+    bodyMedium = T0.bodyMedium.f(FontWeight.Normal),
+    bodySmall = T0.bodySmall.f(FontWeight.Normal),
+    labelLarge = T0.labelLarge.f(FontWeight.Bold),
+    labelMedium = T0.labelMedium.f(FontWeight.Medium),
+    labelSmall = T0.labelSmall.f(FontWeight.Medium)
 )
 
 @Composable
@@ -130,22 +196,118 @@ fun AppTheme(content: @Composable () -> Unit) {
         dark -> DarkFallback
         else -> LightFallback
     }
-    MaterialTheme(colorScheme = cs, shapes = AppShapes, content = content)
+    MaterialTheme(colorScheme = cs, typography = AppType, content = content)
 }
 
-// ───────────── أيقونة التحميل (مش موجودة في المكتبة الأساسية) ─────────────
+// ═══════════════════════════ الأيقونات المرسومة ═══════════════════════════
 
-private val DownloadIcon: ImageVector by lazy {
-    ImageVector.Builder("download", 24.dp, 24.dp, 24f, 24f).apply {
-        path(stroke = SolidColor(Color.Black), strokeLineWidth = 2.2f, strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
-            moveTo(12f, 4f); lineTo(12f, 15f)
-            moveTo(7f, 10.5f); lineTo(12f, 15.5f); lineTo(17f, 10.5f)
-            moveTo(5f, 20f); lineTo(19f, 20f)
-        }
+private fun vec(name: String, b: PathBuilder.() -> Unit): ImageVector =
+    ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
+        path(stroke = SolidColor(Color.Black), strokeLineWidth = 2.2f, strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round, pathBuilder = b)
     }.build()
+
+private val IcDownload by lazy { vec("download") {
+    moveTo(12f, 4f); lineTo(12f, 15f)
+    moveTo(7f, 10.5f); lineTo(12f, 15.5f); lineTo(17f, 10.5f)
+    moveTo(5f, 20f); lineTo(19f, 20f)
+} }
+private val IcLink by lazy { vec("link") {
+    moveTo(10f, 7f); horizontalLineTo(7f); arcTo(5f, 5f, 0f, false, false, 7f, 17f); horizontalLineTo(10f)
+    moveTo(14f, 7f); horizontalLineTo(17f); arcTo(5f, 5f, 0f, false, true, 17f, 17f); horizontalLineTo(14f)
+    moveTo(8f, 12f); horizontalLineTo(16f)
+} }
+private val IcWifi by lazy { vec("wifi") {
+    moveTo(3f, 9.5f); quadTo(12f, 1f, 21f, 9.5f)
+    moveTo(6f, 13f); quadTo(12f, 7f, 18f, 13f)
+    moveTo(9f, 16.5f); quadTo(12f, 13.5f, 15f, 16.5f)
+    moveTo(12f, 20f); lineTo(12.01f, 20f)
+} }
+private val IcSubs by lazy { vec("subs") {
+    moveTo(5f, 5f); horizontalLineTo(19f); arcTo(2f, 2f, 0f, false, true, 21f, 7f); verticalLineTo(17f)
+    arcTo(2f, 2f, 0f, false, true, 19f, 19f); horizontalLineTo(5f); arcTo(2f, 2f, 0f, false, true, 3f, 17f)
+    verticalLineTo(7f); arcTo(2f, 2f, 0f, false, true, 5f, 5f)
+    moveTo(7f, 11f); horizontalLineTo(10.5f); moveTo(13f, 11f); horizontalLineTo(17f)
+    moveTo(7f, 15f); horizontalLineTo(13f); moveTo(15.5f, 15f); horizontalLineTo(17f)
+} }
+private val IcMusic by lazy { vec("music") {
+    moveTo(9f, 17f); verticalLineTo(5f); lineTo(19f, 3f); verticalLineTo(15f)
+    moveTo(4.5f, 17f); arcTo(2.5f, 2.5f, 0f, true, true, 9.5f, 17f); arcTo(2.5f, 2.5f, 0f, true, true, 4.5f, 17f)
+    moveTo(14.5f, 15f); arcTo(2.5f, 2.5f, 0f, true, true, 19.5f, 15f); arcTo(2.5f, 2.5f, 0f, true, true, 14.5f, 15f)
+} }
+private val IcLayers by lazy { vec("layers") {
+    moveTo(12f, 3f); lineTo(21f, 8f); lineTo(12f, 13f); lineTo(3f, 8f); close()
+    moveTo(3f, 12f); lineTo(12f, 17f); lineTo(21f, 12f)
+    moveTo(3f, 16f); lineTo(12f, 21f); lineTo(21f, 16f)
+} }
+private val IcEngine by lazy { vec("engine") {
+    moveTo(5f, 8f); lineTo(10f, 12f); lineTo(5f, 16f)
+    moveTo(12.5f, 17f); lineTo(19f, 17f)
+} }
+
+// ═══════════════════════════ أشكال وحركة ═══════════════════════════
+
+// شكل "الكوكي" المتموّج: دايرة حوافها فصوص ناعمة
+private class CookieShape(private val lobes: Int = 9, private val amp: Float = 0.06f) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val r = min(size.width, size.height) / 2f
+        val cx = size.width / 2f; val cy = size.height / 2f
+        val p = Path(); val steps = 180
+        for (i in 0..steps) {
+            val a = (2.0 * PI * i / steps).toFloat()
+            val rad = r * (1f - amp + amp * cos(lobes * a))
+            val x = cx + rad * cos(a); val y = cy + rad * sin(a)
+            if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
+        }
+        p.close()
+        return Outline.Generic(p)
+    }
 }
 
-// ───────────── صور ─────────────
+@Composable
+private fun CookieIcon(icon: ImageVector, size: Dp, container: Color, tint: Color, modifier: Modifier = Modifier, spin: Boolean = true) {
+    val shape = remember { CookieShape() }
+    val rot by rememberInfiniteTransition(label = "cookie").animateFloat(0f, 360f,
+        infiniteRepeatable(tween(26000, easing = LinearEasing)), label = "rot")
+    Box(modifier.size(size), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxSize().graphicsLayer { rotationZ = if (spin) rot else 0f }.clip(shape).background(container))
+        Icon(icon, null, Modifier.size(size * 0.44f), tint = tint)
+    }
+}
+
+// شريط تقدم متموّج (زي Material Expressive). p = null يعني "جاري التجهيز"
+@Composable
+private fun WavyBar(p: Float?, modifier: Modifier = Modifier) {
+    val cs = MaterialTheme.colorScheme
+    val active = cs.primary; val track = cs.secondaryContainer
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val inf = rememberInfiniteTransition(label = "wave")
+    val phase by inf.animateFloat(0f, (2.0 * PI).toFloat(), infiniteRepeatable(tween(1100, easing = LinearEasing)), label = "ph")
+    val slide by inf.animateFloat(-0.35f, 1f, infiniteRepeatable(tween(1500, easing = LinearEasing)), label = "sl")
+    Canvas(modifier.fillMaxWidth().height(16.dp)) {
+        val sw = 4.dp.toPx(); val amp = 3.dp.toPx(); val wl = 24.dp.toPx()
+        val cy = size.height / 2f; val w = size.width; val gap = sw * 1.3f
+        val from: Float; val to: Float
+        if (p != null) { from = 0f; to = w * p.coerceIn(0f, 1f) }
+        else { from = (slide * w).coerceAtLeast(0f); to = (slide * w + 0.35f * w).coerceAtMost(w) }
+        scale(if (rtl) -1f else 1f, 1f, pivot = center) {
+            if (to + gap < w) drawLine(track, Offset(to + gap, cy), Offset(w, cy), sw, StrokeCap.Round)
+            if (p == null && from - gap > 0f) drawLine(track, Offset(0f, cy), Offset(from - gap, cy), sw, StrokeCap.Round)
+            if (to - from > 1f) {
+                val path = Path()
+                var x = from
+                path.moveTo(x, cy + amp * sin(x / wl * 2f * PI.toFloat() - phase))
+                while (x < to) {
+                    x = min(x + 3f, to)
+                    path.lineTo(x, cy + amp * sin(x / wl * 2f * PI.toFloat() - phase))
+                }
+                drawPath(path, active, style = Stroke(sw, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
+        }
+    }
+}
+
+// ═══════════════════════════ صور ═══════════════════════════
 
 object Img { val cache = android.util.LruCache<String, Bitmap>(40) }
 
@@ -169,10 +331,11 @@ fun fmt(s: Int): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, x) else "%d:%02d".format(m, x)
 }
 
-// ───────────── عناصر مشتركة (من غير كروت: كله مفتوح على الخلفية) ─────────────
+private fun qTag(h: Int) = when {
+    h >= 2160 -> "4K"; h >= 1440 -> "2K"; h >= 1080 -> "Full HD"; h >= 720 -> "HD"; else -> "SD"
+}
 
-@Composable
-private fun flat() = ListItemDefaults.colors(containerColor = Color.Transparent)
+// ═══════════════════════════ عناصر مشتركة ═══════════════════════════
 
 @Composable
 private fun fieldColors(): TextFieldColors {
@@ -185,81 +348,110 @@ private fun fieldColors(): TextFieldColors {
 }
 
 @Composable
-private fun SectionLabel(text: String) =
-    Text(text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 6.dp))
+private fun Header(title: String, sub: String? = null) {
+    Column(Modifier.statusBarsPadding().padding(top = 24.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, style = MaterialTheme.typography.displaySmall)
+        if (sub != null) Text(sub, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String, modifier: Modifier = Modifier) =
+    Text(text, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary,
+        modifier = modifier.padding(top = 28.dp, bottom = 6.dp))
 
 @Composable
 private fun Footnote(text: String) =
     Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+        modifier = Modifier.padding(top = 2.dp, bottom = 6.dp))
 
 @Composable
-private fun Divide() =
-    HorizontalDivider(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
-
-@Composable
-private fun Choice(opts: List<String>, sel: Int, modifier: Modifier = Modifier, on: (Int) -> Unit) {
-    SingleChoiceSegmentedButtonRow(modifier.fillMaxWidth()) {
-        opts.forEachIndexed { i, o ->
-            SegmentedButton(i == sel, { on(i) }, SegmentedButtonDefaults.itemShape(i, opts.size)) { Text(o) }
+private fun SettingRow(icon: ImageVector?, title: String, sub: String? = null, subColor: Color = Color.Unspecified,
+                       onClick: (() -> Unit)? = null, trailing: (@Composable () -> Unit)? = null) {
+    val cs = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
+        .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+        .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        if (icon != null) Box(Modifier.size(46.dp).clip(RoundedCornerShape(16.dp)).background(cs.secondaryContainer),
+            contentAlignment = Alignment.Center) {
+            Icon(icon, null, Modifier.size(22.dp), tint = cs.onSecondaryContainer)
         }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            if (sub != null) Text(sub, style = MaterialTheme.typography.bodyMedium,
+                color = if (subColor == Color.Unspecified) cs.onSurfaceVariant else subColor)
+        }
+        trailing?.invoke()
+    }
+}
+
+@Composable
+private fun Toggle(checked: Boolean, onChange: (Boolean) -> Unit) =
+    Switch(checked, onChange, thumbContent = if (checked) ({ Icon(Icons.Rounded.Check, null, Modifier.size(SwitchDefaults.IconSize)) }) else null)
+
+// مبدّل بحبّة بتنزلق بين الخيارات
+@Composable
+private fun Switcher(opts: List<String>, sel: Int, modifier: Modifier = Modifier, on: (Int) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    BoxWithConstraints(modifier.fillMaxWidth().height(54.dp).clip(CircleShape).background(cs.surfaceContainerHigh).padding(4.dp)) {
+        val w = maxWidth / opts.size
+        val x by animateDpAsState(w * sel.coerceAtLeast(0), spring(0.8f, 420f), label = "sw")
+        if (sel >= 0) Box(Modifier.offset(x = x).width(w).fillMaxHeight().clip(CircleShape).background(cs.primary))
+        Row(Modifier.fillMaxSize()) {
+            opts.forEachIndexed { i, o ->
+                val c by animateColorAsState(if (i == sel) cs.onPrimary else cs.onSurface, label = "swc")
+                Box(Modifier.weight(1f).fillMaxHeight().clip(CircleShape)
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { on(i) },
+                    contentAlignment = Alignment.Center) {
+                    Text(o, color = c, style = MaterialTheme.typography.titleSmall)
+                }
+            }
+        }
+    }
+}
+
+// زر كبير: بيتحوّل شكله ويصغر لما تضغط عليه
+@Composable
+private fun BigButton(text: String, modifier: Modifier = Modifier, icon: ImageVector? = null, enabled: Boolean = true,
+                      loading: Boolean = false, tonal: Boolean = false, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val r by animateDpAsState(if (pressed) 18.dp else 32.dp, spring(0.55f, 600f), label = "r")
+    val s by animateFloatAsState(if (pressed) 0.97f else 1f, spring(0.55f, 600f), label = "s")
+    val bg = if (tonal) cs.secondaryContainer else cs.primary
+    val fg = if (tonal) cs.onSecondaryContainer else cs.onPrimary
+    Row(modifier.fillMaxWidth().height(64.dp)
+        .graphicsLayer { scaleX = s; scaleY = s; alpha = if (enabled) 1f else 0.38f }
+        .clip(RoundedCornerShape(r)).background(bg)
+        .clickable(interactionSource = src, indication = null, enabled = enabled, onClick = onClick),
+        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+        if (loading) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.5.dp, color = fg)
+        else if (icon != null) Icon(icon, null, Modifier.size(24.dp), tint = fg)
+        Spacer(Modifier.width(10.dp))
+        Text(text, color = fg, style = MaterialTheme.typography.titleMedium)
     }
 }
 
 @Composable
 private fun EmptyState(icon: ImageVector, title: String, body: String) {
     val cs = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 48.dp),
+    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(Modifier.size(96.dp).clip(RoundedCornerShape(32.dp)).background(cs.secondaryContainer), contentAlignment = Alignment.Center) {
-            Icon(icon, null, Modifier.size(42.dp), tint = cs.onSecondaryContainer)
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        CookieIcon(icon, 128.dp, cs.primaryContainer, cs.onPrimaryContainer)
+        Spacer(Modifier.height(10.dp))
+        Text(title, style = MaterialTheme.typography.headlineSmall)
         Text(body, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant, textAlign = TextAlign.Center)
     }
 }
 
-// شريط تقدم عريض ومدور. p = null يعني "جاري التجهيز"
 @Composable
-private fun Bar(p: Float?) {
-    val cs = MaterialTheme.colorScheme
-    BoxWithConstraints(Modifier.fillMaxWidth().height(8.dp).clip(CircleShape).background(cs.secondaryContainer)) {
-        if (p != null) {
-            Box(Modifier.fillMaxHeight().fillMaxWidth(p.coerceIn(0.02f, 1f)).clip(CircleShape).background(cs.primary))
-        } else {
-            val t = rememberInfiniteTransition(label = "ind")
-            val x by t.animateFloat(-0.4f, 1f, infiniteRepeatable(tween(1200, easing = LinearEasing)), label = "x")
-            Box(Modifier.offset(x = maxWidth * x).fillMaxHeight().width(maxWidth * 0.4f).clip(CircleShape).background(cs.primary))
-        }
-    }
-}
+private fun PageList(bottom: Dp, content: LazyListScope.() -> Unit) =
+    LazyColumn(Modifier.fillMaxSize().imePadding(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = bottom), content = content)
 
-// صفحة بعنوان كبير بيصغر مع السكرول (زي تطبيقات جوجل)
-@Composable
-private fun Page(title: String, bottom: Dp, content: LazyListScope.() -> Unit) {
-    val sb = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    val cs = MaterialTheme.colorScheme
-    Scaffold(
-        modifier = Modifier.nestedScroll(sb.nestedScrollConnection),
-        containerColor = cs.surface,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        topBar = {
-            LargeTopAppBar(
-                title = { Text(title, fontWeight = FontWeight.SemiBold) },
-                scrollBehavior = sb,
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = cs.surface, scrolledContainerColor = cs.surfaceContainer)
-            )
-        }
-    ) { inner ->
-        LazyColumn(Modifier.fillMaxSize().imePadding(),
-            contentPadding = PaddingValues(top = inner.calculateTopPadding(), bottom = bottom + 24.dp), content = content)
-    }
-}
-
-// ───────────── الهيكل + شريط التنقل ─────────────
+// ═══════════════════════════ الهيكل + شريط التنقل العايم ═══════════════════════════
 
 private class NavTab(val label: String, val on: ImageVector, val off: ImageVector)
 
@@ -268,37 +460,73 @@ fun App() {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val inc by Incoming.v.collectAsState()
     LaunchedEffect(inc) { if (inc != null) tab = 0 }
+    val cs = MaterialTheme.colorScheme
+    val imeOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val bottom = if (imeOpen) 16.dp else WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 120.dp
+
+    Box(Modifier.fillMaxSize().background(cs.surface)) {
+        Crossfade(tab, Modifier.fillMaxSize(), label = "tab") {
+            when (it) { 0 -> HomeScreen(bottom); 1 -> LibraryScreen(bottom); else -> SettingsScreen(bottom) }
+        }
+        AnimatedVisibility(!imeOpen, Modifier.align(Alignment.BottomCenter),
+            enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
+            Box(Modifier.fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(Color.Transparent, cs.surface)))
+                .navigationBarsPadding().padding(top = 36.dp, bottom = 14.dp),
+                contentAlignment = Alignment.Center) { FloatingNav(tab) { tab = it } }
+        }
+    }
+}
+
+@Composable
+private fun FloatingNav(sel: Int, on: (Int) -> Unit) {
+    val cs = MaterialTheme.colorScheme
     val hap = LocalHapticFeedback.current
-    val tabs = remember {
+    val items = remember {
         listOf(
             NavTab("الرئيسية", Icons.Rounded.Home, Icons.Outlined.Home),
             NavTab("المكتبة", Icons.Rounded.PlayArrow, Icons.Outlined.PlayArrow),
             NavTab("الإعدادات", Icons.Rounded.Settings, Icons.Outlined.Settings)
         )
     }
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.surface,
-        bottomBar = {
-            NavigationBar {
-                tabs.forEachIndexed { i, t ->
-                    NavigationBarItem(
-                        selected = tab == i,
-                        onClick = { hap.performHapticFeedback(HapticFeedbackType.TextHandleMove); tab = i },
-                        icon = { Icon(if (tab == i) t.on else t.off, null) },
-                        label = { Text(t.label) }
-                    )
+    Surface(shape = CircleShape, color = cs.surfaceContainerHigh, shadowElevation = 10.dp) {
+        Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            items.forEachIndexed { i, t ->
+                val a = i == sel
+                val bg by animateColorAsState(if (a) cs.primaryContainer else Color.Transparent, label = "nb")
+                Row(Modifier.height(54.dp).clip(CircleShape).background(bg)
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                        hap.performHapticFeedback(HapticFeedbackType.TextHandleMove); on(i)
+                    }
+                    .padding(horizontal = 20.dp).animateContentSize(spring(0.8f, 400f)),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Icon(if (a) t.on else t.off, t.label, tint = if (a) cs.onPrimaryContainer else cs.onSurfaceVariant)
+                    AnimatedVisibility(a, enter = fadeIn() + expandHorizontally(), exit = fadeOut() + shrinkHorizontally()) {
+                        Text(t.label, Modifier.padding(start = 10.dp), color = cs.onPrimaryContainer,
+                            style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                    }
                 }
             }
-        }
-    ) { pad ->
-        val bottom = pad.calculateBottomPadding()
-        Crossfade(tab, Modifier.fillMaxSize(), label = "tab") {
-            when (it) { 0 -> HomeScreen(bottom); 1 -> LibraryScreen(bottom); else -> SettingsScreen(bottom) }
         }
     }
 }
 
-// ───────────── الرئيسية ─────────────
+// ═══════════════════════════ الرئيسية ═══════════════════════════
+
+@Composable
+private fun HomeHero() {
+    val cs = MaterialTheme.colorScheme
+    val bob by rememberInfiniteTransition(label = "bob").animateFloat(-5f, 5f,
+        infiniteRepeatable(tween(1900, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "b")
+    Row(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 28.dp, bottom = 28.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Grab", style = MaterialTheme.typography.titleMedium, color = cs.primary)
+            Text("الصق الرابط،\nوخلّيها علينا", style = MaterialTheme.typography.displaySmall)
+        }
+        CookieIcon(IcDownload, 104.dp, cs.primary, cs.onPrimary, Modifier.offset(y = bob.dp))
+    }
+}
 
 @Composable
 fun HomeScreen(bottom: Dp) {
@@ -307,6 +535,7 @@ fun HomeScreen(bottom: Dp) {
     val clip = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val cs = MaterialTheme.colorScheme
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     var url by remember { mutableStateOf(Prefs.draft) }
     LaunchedEffect(url) { Prefs.draft = url }
     var info by remember { mutableStateOf<VideoInfo?>(null) }
@@ -341,145 +570,162 @@ fun HomeScreen(bottom: Dp) {
     }
     LaunchedEffect(inc) { inc?.let { url = it; Incoming.v.value = null; go() } }
 
-    Page("التحميلات", bottom) {
-        item {
-            TextField(
-                value = url, onValueChange = { url = it }, singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(28.dp), colors = fieldColors(),
-                placeholder = { Text("الصق رابط الفيديو هنا") },
-                trailingIcon = {
-                    if (url.isEmpty()) TextButton({ clip.getText()?.text?.let { url = urlOf(it) } }) { Text("لصق") }
-                    else IconButton({ url = "" }) { Icon(Icons.Rounded.Close, "مسح") }
-                },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
-                keyboardActions = KeyboardActions(onGo = { go() })
-            )
-        }
-        item {
-            ListItem(
-                headlineContent = { Text("قائمة تشغيل") },
-                supportingContent = { Text("حمّل كل الفيديوهات مباشرة") },
-                trailingContent = { Switch(playlist, { playlist = it }) },
-                colors = flat(), modifier = Modifier.clickable { playlist = !playlist }
-            )
-        }
-        item {
-            Button(
-                onClick = { hap.performHapticFeedback(HapticFeedbackType.LongPress); go() },
-                enabled = url.isNotBlank() && !loading,
-                shape = RoundedCornerShape(28.dp),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).height(56.dp)
-            ) {
-                if (loading) {
-                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.5.dp, color = LocalContentColor.current)
-                    Spacer(Modifier.width(10.dp)); Text("جاري الجلب…", style = MaterialTheme.typography.titleMedium)
-                } else {
-                    Icon(DownloadIcon, null, Modifier.size(22.dp)); Spacer(Modifier.width(10.dp))
-                    Text(if (playlist) "تحميل القائمة" else "جلب", style = MaterialTheme.typography.titleMedium)
-                }
-            }
-        }
-        if (!ready) item {
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                Text(if (engineSt.isNotEmpty()) engineSt else "جاري تجهيز المحرك…",
-                    style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
-            }
-        }
-        if (err.isNotEmpty()) item {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Icon(Icons.Rounded.Warning, null, Modifier.size(20.dp), tint = cs.error)
-                    Text(err, style = MaterialTheme.typography.bodyMedium, color = cs.error)
-                }
-                TextButton({ direct() }) { Text("حمّل مباشرة") }
-            }
-        }
-
-        info?.let { i ->
+    // توهّج لوني ناعم ثابت في أعلى الشاشة
+    Box(Modifier.fillMaxSize().drawBehind {
+        drawRect(Brush.radialGradient(listOf(cs.primaryContainer.copy(alpha = 0.85f), Color.Transparent),
+            center = Offset(size.width * (if (rtl) 0.12f else 0.88f), size.height * 0.04f), radius = size.width * 0.95f))
+    }) {
+        PageList(bottom) {
+            item { HomeHero() }
             item {
-                Column(Modifier.padding(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Thumb(i.thumbnail, Modifier.fillMaxWidth().aspectRatio(16 / 9f)
-                        .clip(RoundedCornerShape(28.dp)).background(cs.surfaceContainerHigh))
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(i.title ?: "", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
-                            maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text(listOfNotNull(i.uploader, fmt((i.duration as Number?)?.toInt() ?: 0).ifEmpty { null }).joinToString(" • "),
-                            style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+                TextField(
+                    value = url, onValueChange = { url = it }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 68.dp),
+                    shape = RoundedCornerShape(34.dp), colors = fieldColors(),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    placeholder = { Text("رابط الفيديو") },
+                    leadingIcon = { Icon(IcLink, null, tint = cs.onSurfaceVariant) },
+                    trailingIcon = {
+                        if (url.isEmpty()) Box(Modifier.padding(end = 8.dp).clip(CircleShape).background(cs.primaryContainer)
+                            .clickable { clip.getText()?.text?.let { url = urlOf(it) } }
+                            .padding(horizontal = 16.dp, vertical = 9.dp)) {
+                            Text("لصق", color = cs.onPrimaryContainer, style = MaterialTheme.typography.labelLarge)
+                        } else IconButton({ url = "" }) { Icon(Icons.Rounded.Close, "مسح") }
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { go() })
+                )
+            }
+            item {
+                Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FilterChip(selected = playlist, onClick = { playlist = !playlist }, label = { Text("قائمة تشغيل كاملة") },
+                        leadingIcon = if (playlist) ({ Icon(Icons.Rounded.Check, null, Modifier.size(18.dp)) }) else null)
+                }
+            }
+            item {
+                BigButton(if (playlist) "تحميل القائمة" else if (loading) "جاري الجلب…" else "جلب",
+                    Modifier.padding(top = 16.dp), icon = IcDownload,
+                    enabled = url.isNotBlank() && !loading, loading = loading) {
+                    hap.performHapticFeedback(HapticFeedbackType.LongPress); go()
+                }
+            }
+            if (!ready) item {
+                Row(Modifier.padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text(if (engineSt.isNotEmpty()) engineSt else "جاري تجهيز المحرك…",
+                        style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                }
+            }
+            if (err.isNotEmpty()) item {
+                Column(Modifier.padding(top = 16.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Rounded.Warning, null, Modifier.size(22.dp), tint = cs.error)
+                        Text(err, style = MaterialTheme.typography.bodyMedium, color = cs.error)
                     }
-                    Choice(listOf("فيديو", "صوت"), kind) { kind = it }
-                    if (kind == 0) {
-                        val hs = i.formats?.map { (it.height as Number?)?.toInt() ?: 0 }?.filter { it > 0 }
-                            ?.distinct()?.sortedDescending()?.take(6) ?: emptyList()
-                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            (listOf(0) + hs).forEach { q ->
-                                FilterChip(
-                                    selected = h == q, onClick = { h = q },
-                                    label = { Text(if (q == 0) "الأفضل" else "${q}p") },
-                                    leadingIcon = if (h == q) ({ Icon(Icons.Rounded.Check, null, Modifier.size(18.dp)) }) else null
-                                )
+                    TextButton({ direct() }) { Text("حمّل مباشرة") }
+                }
+            }
+
+            info?.let { i ->
+                item {
+                    val dur = fmt((i.duration as Number?)?.toInt() ?: 0)
+                    Column(Modifier.padding(top = 28.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                        Box {
+                            Thumb(i.thumbnail, Modifier.fillMaxWidth().aspectRatio(16 / 9f)
+                                .clip(RoundedCornerShape(32.dp)).background(cs.surfaceContainerHigh))
+                            if (dur.isNotEmpty()) Box(Modifier.align(Alignment.BottomEnd).padding(14.dp).clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.65f)).padding(horizontal = 12.dp, vertical = 5.dp)) {
+                                Text(dur, color = Color.White, style = MaterialTheme.typography.labelLarge)
                             }
                         }
-                        ListItem(
-                            headlineContent = { Text("تضمين الترجمة") },
-                            trailingContent = { Switch(subs, { subs = it }) },
-                            colors = flat(), modifier = Modifier.clickable { subs = !subs }.padding(horizontal = 0.dp)
-                        )
-                    } else Text("الصيغة: ${Prefs.audioFmt.uppercase()} (من الإعدادات)",
-                        style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
-                    Button(
-                        onClick = {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(i.title ?: "", style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            if (!i.uploader.isNullOrEmpty()) Text(i.uploader ?: "", style = MaterialTheme.typography.bodyMedium,
+                                color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Switcher(listOf("فيديو", "صوت"), kind) { kind = it }
+                        if (kind == 0) {
+                            val hs = i.formats?.map { (it.height as Number?)?.toInt() ?: 0 }?.filter { it > 0 }
+                                ?.distinct()?.sortedDescending()?.take(6) ?: emptyList()
+                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                QChip("الأفضل", "تلقائي", h == 0) { h = 0 }
+                                hs.forEach { q -> QChip("${q}p", qTag(q), h == q) { h = q } }
+                            }
+                            SettingRow(IcSubs, "تضمين الترجمة", onClick = { subs = !subs }) { Toggle(subs) { subs = it } }
+                        } else SettingRow(IcMusic, "الصيغة: ${Prefs.audioFmt.uppercase()}", "تتغير من الإعدادات")
+                        BigButton("تحميل", icon = IcDownload) {
                             hap.performHapticFeedback(HapticFeedbackType.LongPress)
                             Repo.enqueue(ctx, newTask(i.title ?: url, i.thumbnail, false)); info = null; url = ""
-                        },
-                        shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth().height(56.dp)
-                    ) {
-                        Icon(DownloadIcon, null, Modifier.size(22.dp)); Spacer(Modifier.width(10.dp))
-                        Text("تحميل", style = MaterialTheme.typography.titleMedium)
+                        }
                     }
                 }
             }
-        }
 
-        if (Repo.tasks.isNotEmpty()) {
-            item { SectionLabel("قيد التنفيذ") }
-            items(Repo.tasks, key = { it.id }) { TaskRow(it) }
-        } else if (info == null && err.isEmpty()) item {
-            EmptyState(DownloadIcon, "جاهز للتحميل",
-                "شارك أي رابط من يوتيوب أو إنستجرام أو فيسبوك أو تيك توك لتطبيق Grab وهيبدأ فورًا.")
+            if (Repo.tasks.isNotEmpty()) {
+                item {
+                    Row(Modifier.padding(top = 32.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("قيد التنفيذ", style = MaterialTheme.typography.titleLarge)
+                        Box(Modifier.clip(CircleShape).background(cs.primaryContainer).padding(horizontal = 10.dp, vertical = 2.dp)) {
+                            Text("${Repo.tasks.size}", color = cs.onPrimaryContainer, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+                items(Repo.tasks, key = { it.id }) { TaskRow(it, Modifier.animateItem()) }
+            } else if (info == null && err.isEmpty()) item {
+                EmptyState(IcDownload, "جاهز للتحميل",
+                    "شارك أي رابط من يوتيوب أو إنستجرام أو فيسبوك أو تيك توك لتطبيق Grab وهيبدأ فورًا.")
+            }
         }
     }
 }
 
 @Composable
-fun TaskRow(t: Task) {
+private fun QChip(top: String, sub: String, sel: Boolean, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val bg by animateColorAsState(if (sel) cs.primary else cs.surfaceContainerHigh, label = "qc")
+    val fg = if (sel) cs.onPrimary else cs.onSurface
+    Column(Modifier.clip(RoundedCornerShape(24.dp)).background(bg)
+        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
+        .padding(horizontal = 22.dp, vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(top, color = fg, style = MaterialTheme.typography.titleMedium)
+        Text(sub, color = fg.copy(alpha = 0.75f), style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@Composable
+fun TaskRow(t: Task, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
     val p by animateFloatAsState(t.progress, label = "prog")
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+    Row(modifier.fillMaxWidth().padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Thumb(t.thumb, Modifier.size(64.dp).clip(RoundedCornerShape(18.dp)).background(cs.surfaceContainerHigh))
+        Thumb(t.thumb, Modifier.size(72.dp).clip(RoundedCornerShape(24.dp)).background(cs.surfaceContainerHigh))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-            if (t.st == St.Running || t.st == St.Queued) Bar(if (t.st == St.Running && t.progress > 0f) p else if (t.st == St.Queued) 0f else null)
+            Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+            when (t.st) {
+                St.Running -> WavyBar(if (t.progress > 0f) p else null)
+                St.Queued -> WavyBar(0f)
+                else -> {}
+            }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (t.st == St.Done) Icon(Icons.Rounded.CheckCircle, null, Modifier.size(16.dp), tint = cs.tertiary)
+                if (t.st == St.Done) Icon(Icons.Rounded.CheckCircle, null, Modifier.size(18.dp), tint = cs.tertiary)
                 Text(when (t.st) {
                     St.Queued -> "في الانتظار"
                     St.Running -> if (t.msg.isNotEmpty() && t.progress == 0f) t.msg else "${(t.progress * 100).toInt()}%" + if (t.eta > 0) " • باقي ${t.eta}ث" else ""
                     St.Failed -> t.msg
                     St.Canceled -> "أُلغي"
-                    St.Done -> "تم"
-                }, style = MaterialTheme.typography.labelMedium,
-                    color = if (t.st == St.Failed) cs.error else cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    St.Done -> "تم التحميل"
+                }, style = MaterialTheme.typography.labelLarge,
+                    color = when (t.st) { St.Failed -> cs.error; St.Done -> cs.tertiary; else -> cs.onSurfaceVariant },
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
         when (t.st) {
             St.Running, St.Queued -> FilledTonalIconButton({ Repo.cancel(t) }) { Icon(Icons.Rounded.Close, "إلغاء") }
-            St.Failed, St.Canceled -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            St.Failed, St.Canceled -> Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 FilledTonalIconButton({ Repo.enqueue(ctx, t) }) { Icon(Icons.Rounded.Refresh, "إعادة") }
                 IconButton({ Repo.drop(t) }) { Icon(Icons.Rounded.Delete, "حذف") }
             }
@@ -488,7 +734,7 @@ fun TaskRow(t: Task) {
     }
 }
 
-// ───────────── المكتبة ─────────────
+// ═══════════════════════════ المكتبة (شبكة صور) ═══════════════════════════
 
 private fun openItem(c: Context, i: Item) = try {
     c.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(i.uri), if (i.audio) "audio/*" else "video/*")
@@ -506,48 +752,61 @@ fun LibraryScreen(bottom: Dp) {
     val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
     var q by remember { mutableStateOf("") }
-    val list = Repo.library.filter { it.title.contains(q, true) }
-    Page("المكتبة", bottom) {
-        item {
+    var f by remember { mutableIntStateOf(0) }
+    val list = Repo.library.filter { (f == 0 || (f == 1 && !it.audio) || (f == 2 && it.audio)) && it.title.contains(q, true) }
+    val full: androidx.compose.foundation.lazy.grid.LazyGridItemSpanScope.() -> GridItemSpan = { GridItemSpan(maxLineSpan) }
+
+    LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxSize().imePadding(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = bottom),
+        horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        item(span = full) { Header("المكتبة", if (Repo.library.isEmpty()) null else "${Repo.library.size} ملف") }
+        item(span = full) {
             TextField(
                 value = q, onValueChange = { q = it }, singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(28.dp), colors = fieldColors(),
-                placeholder = { Text("ابحث في التنزيلات") },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp),
+                shape = RoundedCornerShape(30.dp), colors = fieldColors(),
+                placeholder = { Text("ابحث في تنزيلاتك") },
                 leadingIcon = { Icon(Icons.Rounded.Search, null) },
                 trailingIcon = { if (q.isNotEmpty()) IconButton({ q = "" }) { Icon(Icons.Rounded.Close, "مسح") } }
             )
         }
-        item { Spacer(Modifier.height(8.dp)) }
-        if (list.isEmpty()) item {
-            EmptyState(Icons.Rounded.PlayArrow, if (q.isEmpty()) "المكتبة فاضية" else "مفيش نتائج",
-                if (q.isEmpty()) "اللي تحمّله هيظهر هنا." else "جرّب كلمة تانية.")
+        item(span = full) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                listOf("الكل", "فيديو", "صوت").forEachIndexed { i, l ->
+                    FilterChip(selected = f == i, onClick = { f = i }, label = { Text(l) },
+                        leadingIcon = if (f == i) ({ Icon(Icons.Rounded.Check, null, Modifier.size(18.dp)) }) else null)
+                }
+            }
+        }
+        if (list.isEmpty()) item(span = full) {
+            EmptyState(Icons.Rounded.PlayArrow, if (Repo.library.isEmpty()) "المكتبة فاضية" else "مفيش نتائج",
+                if (Repo.library.isEmpty()) "اللي تحمّله هيظهر هنا." else "جرّب كلمة تانية أو فلتر تاني.")
         }
         items(list, key = { it.uri }) { i ->
-            ListItem(
-                modifier = Modifier.clickable { openItem(ctx, i) },
-                colors = flat(),
-                leadingContent = {
-                    Box(Modifier.size(64.dp).clip(RoundedCornerShape(18.dp)).background(cs.primaryContainer), contentAlignment = Alignment.Center) {
-                        if (i.thumb != null) Thumb(i.thumb, Modifier.fillMaxSize())
-                        else if (i.audio) Text("♪", style = MaterialTheme.typography.headlineSmall, color = cs.onPrimaryContainer)
-                        else Icon(Icons.Rounded.PlayArrow, null, tint = cs.onPrimaryContainer)
-                    }
-                },
-                headlineContent = { Text(i.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium) },
-                supportingContent = { Text(if (i.audio) "صوت" else "فيديو") },
-                trailingContent = {
-                    Row {
-                        IconButton({ shareItem(ctx, i) }) { Icon(Icons.Rounded.Share, "مشاركة") }
-                        IconButton({ Repo.remove(i) }) { Icon(Icons.Rounded.Delete, "حذف") }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(Modifier.fillMaxWidth().aspectRatio(1.35f).clip(RoundedCornerShape(28.dp))
+                    .background(cs.surfaceContainerHigh).clickable { openItem(ctx, i) }, contentAlignment = Alignment.Center) {
+                    if (i.thumb != null) Thumb(i.thumb, Modifier.fillMaxSize())
+                    else CookieIcon(if (i.audio) IcMusic else Icons.Rounded.PlayArrow, 72.dp, cs.primaryContainer, cs.onPrimaryContainer, spin = false)
+                    Box(Modifier.align(Alignment.TopStart).padding(10.dp).clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.55f)).padding(7.dp)) {
+                        Icon(if (i.audio) IcMusic else Icons.Rounded.PlayArrow, null, Modifier.size(16.dp), tint = Color.White)
                     }
                 }
-            )
+                Text(i.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(horizontal = 4.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (i.audio) "صوت" else "فيديو", Modifier.weight(1f).padding(horizontal = 4.dp),
+                        style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                    IconButton({ shareItem(ctx, i) }, Modifier.size(36.dp)) { Icon(Icons.Rounded.Share, "مشاركة", Modifier.size(20.dp)) }
+                    IconButton({ Repo.remove(i) }, Modifier.size(36.dp)) { Icon(Icons.Rounded.Delete, "حذف", Modifier.size(20.dp)) }
+                }
+            }
         }
     }
 }
 
-// ───────────── الإعدادات ─────────────
+// ═══════════════════════════ الإعدادات ═══════════════════════════
 
 @Composable
 fun SettingsScreen(bottom: Dp) {
@@ -563,73 +822,62 @@ fun SettingsScreen(bottom: Dp) {
     }
     val fmts = listOf("mp3", "m4a", "opus")
 
-    Page("الإعدادات", bottom) {
-        item { SectionLabel("التحميل") }
-        item {
-            ListItem(headlineContent = { Text("تحميل على الواي فاي فقط") },
-                trailingContent = { Switch(Prefs.wifiOnly, { Prefs.wifiOnly = it; Prefs.save() }) },
-                colors = flat(), modifier = Modifier.clickable { Prefs.wifiOnly = !Prefs.wifiOnly; Prefs.save() })
-        }
-        item {
-            ListItem(headlineContent = { Text("تضمين الترجمة افتراضيًا") },
-                trailingContent = { Switch(Prefs.subs, { Prefs.subs = it; Prefs.save() }) },
-                colors = flat(), modifier = Modifier.clickable { Prefs.subs = !Prefs.subs; Prefs.save() })
-        }
-        item {
-            Column(Modifier.padding(bottom = 8.dp)) {
-                ListItem(headlineContent = { Text("صيغة الصوت") }, colors = flat())
-                Choice(fmts.map { it.uppercase() }, fmts.indexOf(Prefs.audioFmt), Modifier.padding(horizontal = 16.dp)) {
-                    Prefs.audioFmt = fmts[it]; Prefs.save()
-                }
-            }
-        }
-        item {
-            Column {
-                ListItem(headlineContent = { Text("عدد التحميلات المتزامنة") }, colors = flat())
-                Choice(listOf("1", "2", "3"), Prefs.concurrent - 1, Modifier.padding(horizontal = 16.dp)) {
-                    Prefs.concurrent = it + 1; Prefs.save()
-                }
-                Footnote("عدد التحميلات المتزامنة يسري بعد إعادة تشغيل التطبيق.")
-            }
-        }
-        item { Divide() }
+    PageList(bottom) {
+        item { Header("الإعدادات") }
 
-        item { SectionLabel("المحرك") }
+        item { SectionTitle("التحميل", Modifier.padding(top = 0.dp)) }
         item {
-            ListItem(headlineContent = { Text("محرك التحميل (yt-dlp)") },
-                supportingContent = if (st.isNotEmpty()) ({ Text(st) }) else null,
-                trailingContent = { Text(if (ver.isNotEmpty()) ver else "—", color = cs.onSurfaceVariant) },
-                colors = flat())
-        }
-        item {
-            Column {
-                FilledTonalButton({ Repo.update() }, Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-                    Icon(Icons.Rounded.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("تحديث الآن")
-                }
-                Footnote("بيتحدّث تلقائيًا كل 24 ساعة، وكمان لو التحميل فشل.")
+            SettingRow(IcWifi, "الواي فاي فقط", "ما تستهلكش باقة الموبايل", onClick = { Prefs.wifiOnly = !Prefs.wifiOnly; Prefs.save() }) {
+                Toggle(Prefs.wifiOnly) { Prefs.wifiOnly = it; Prefs.save() }
             }
         }
-        item { Divide() }
+        item {
+            SettingRow(IcSubs, "الترجمة افتراضيًا", "تضمين الترجمة في كل تحميل", onClick = { Prefs.subs = !Prefs.subs; Prefs.save() }) {
+                Toggle(Prefs.subs) { Prefs.subs = it; Prefs.save() }
+            }
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                SettingRow(IcMusic, "صيغة الصوت")
+                Switcher(fmts.map { it.uppercase() }, fmts.indexOf(Prefs.audioFmt)) { Prefs.audioFmt = fmts[it]; Prefs.save() }
+            }
+        }
+        item {
+            Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                SettingRow(IcLayers, "تحميلات متزامنة")
+                Switcher(listOf("1", "2", "3"), Prefs.concurrent - 1) { Prefs.concurrent = it + 1; Prefs.save() }
+                Footnote("يسري بعد إعادة تشغيل التطبيق.")
+            }
+        }
 
-        item { SectionLabel("كوكيز يوتيوب") }
+        item { SectionTitle("المحرك") }
         item {
-            ListItem(headlineContent = { Text("الحالة") },
-                trailingContent = {
-                    Text(if (hasCk) "مفعّلة" else "غير مفعّلة", fontWeight = FontWeight.Medium,
-                        color = if (hasCk) cs.tertiary else cs.onSurfaceVariant)
-                }, colors = flat())
-        }
-        item {
-            Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (ckMsg.isNotEmpty()) Text(ckMsg, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton({ picker.launch(arrayOf("*/*")) }) { Text("استيراد") }
-                    if (hasCk) OutlinedButton({ Repo.clearCookies(); ckMsg = "" }) { Text("حذف") }
+            SettingRow(IcEngine, "yt-dlp", if (st.isNotEmpty()) st else if (ver.isNotEmpty()) "الإصدار $ver" else "—") {
+                Box(Modifier.clip(CircleShape).background(cs.primaryContainer).clickable { Repo.update() }
+                    .padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(Icons.Rounded.Refresh, null, Modifier.size(18.dp), tint = cs.onPrimaryContainer)
+                        Text("تحديث", color = cs.onPrimaryContainer, style = MaterialTheme.typography.labelLarge)
+                    }
                 }
             }
         }
+        item { Footnote("بيتحدّث تلقائيًا كل 24 ساعة، وكمان لو التحميل فشل.") }
+
+        item { SectionTitle("كوكيز يوتيوب") }
         item {
-            Footnote("لو يوتيوب طلب \"تأكيد إنك مش بوت\" فاستيراد الكوكيز هو الحل الأضمن. صدّر ملف cookies.txt من متصفحك (إضافة Get cookies.txt LOCALLY) وبعدين استورده هنا. يفضّل تستخدم حساب ثانوي.")
+            SettingRow(Icons.Rounded.Lock, "ملف الكوكيز", if (hasCk) "مفعّلة" else "غير مفعّلة",
+                subColor = if (hasCk) cs.tertiary else Color.Unspecified)
+        }
+        item {
+            Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (ckMsg.isNotEmpty()) Text(ckMsg, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FilledTonalButton({ picker.launch(arrayOf("*/*")) }) { Text("استيراد cookies.txt") }
+                    if (hasCk) TextButton({ Repo.clearCookies(); ckMsg = "" }) { Text("حذف", color = cs.error) }
+                }
+                Footnote("لو يوتيوب طلب «تأكيد إنك مش بوت» فاستيراد الكوكيز هو الحل الأضمن. صدّر ملف cookies.txt من متصفحك (إضافة Get cookies.txt LOCALLY) وبعدين استورده هنا. يفضّل تستخدم حساب ثانوي.")
+            }
         }
     }
 }
