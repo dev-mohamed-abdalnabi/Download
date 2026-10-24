@@ -1,0 +1,9 @@
+-keep class com.yausername.** { *; }
+-keepnames class com.fasterxml.jackson.**
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-dontwarn com.fasterxml.jackson.**
+-dontwarn org.apache.commons.**
+-dontwarn javax.**
+-dontwarn java.beans.**
+-assumenosideeffects class android.util.Log { public static *** d(...); public static *** v(...); public static *** i(...); }
+-repackageclasses ''
