@@ -88,7 +88,7 @@ object Repo {
         scope.launch {
             try {
                 ensureEngine()
-                if (System.currentTimeMillis() - Prefs.sp.getLong("u", 0) > 86_400_000) updateBlocking()
+                if (System.currentTimeMillis() - Prefs.sp.getLong("u", 0) > 86_400_000) { delay(30_000); updateBlocking() }
             } catch (e: Throwable) { status.value = clean(e) }
         }
     }
@@ -150,16 +150,16 @@ object Repo {
 
     // ───── استراتيجيات يوتيوب: بنجرّب واحدة ورا التانية لحد ما واحدة تنجح ─────
     private val ytArgs = listOf<String?>(
-        null,                                              // الافتراضي بتاع yt-dlp
-        "youtube:player_client=tv,android_vr",
-        "youtube:player_client=web_safari,mweb",
-        "youtube:player_client=ios,android"
+        "youtube:player_client=android_vr",     // سريع، من غير JS ولا PO token، ومش بيتخنق
+        "youtube:player_client=tv",
+        null,                                   // الافتراضي
+        "youtube:player_client=ios,mweb"
     )
     private fun isYt(u: String) = u.contains("youtube.com", true) || u.contains("youtu.be", true) || u.contains("youtube-nocookie.com", true)
 
     private fun common(r: YoutubeDLRequest, strat: Int, url: String) {
-        r.addOption("--socket-timeout", "20")
-        r.addOption("--retries", "10")
+        r.addOption("--socket-timeout", "10")
+        r.addOption("--retries", "5")
         r.addOption("--fragment-retries", "10")
         if (isYt(url)) ytArgs.getOrNull(strat)?.let { r.addOption("--extractor-args", it) }
         if (hasCookies.value && cookieFile.exists()) r.addOption("--cookies", cookieFile.absolutePath)
@@ -168,11 +168,11 @@ object Repo {
     suspend fun fetch(url: String): VideoInfo = withContext(Dispatchers.IO) {
         ensureEngine()
         var last: Throwable? = null
-        val n = if (isYt(url)) ytArgs.size else 2
+        val n = if (isYt(url)) 2 else 1   // المعاينة لازم تكون سريعة
         for (i in 0 until n) {
             try {
                 return@withContext YoutubeDL.getInstance().getInfo(
-                    YoutubeDLRequest(url).apply { addOption("--no-playlist"); common(this, i, url) })
+                    YoutubeDLRequest(url).apply { addOption("--no-playlist"); addOption("--no-warnings"); common(this, i, url) })
             } catch (e: CancellationException) { throw e
             } catch (e: Throwable) { last = e; delay(300) }
         }
@@ -234,7 +234,7 @@ object Repo {
         val r = YoutubeDLRequest(t.url)
         r.addOption("-o", "${dir.absolutePath}/%(title).80s.%(ext)s")
         r.addOption("--no-mtime"); common(r, strat, t.url)
-        r.addOption("--concurrent-fragments", "4")
+        r.addOption("--concurrent-fragments", "8"); r.addOption("--http-chunk-size", "10M")
         r.addOption(if (t.playlist) "--yes-playlist" else "--no-playlist")
         if (t.audio) {
             r.addOption("-f", "ba/b")

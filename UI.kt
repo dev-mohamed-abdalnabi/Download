@@ -65,40 +65,39 @@ val Green = Color(0xFF34C759)
 val Red = Color(0xFFFF453A)
 
 // الزجاج بيشوف الخلفية بس (للكروت)، والشريط السفلي بيشوف الخلفية + المحتوى اللي بيعدّي تحته
-val LocalBg = staticCompositionLocalOf<HazeState?> { null }
 val LocalFull = staticCompositionLocalOf<HazeState?> { null }
+val LocalBg = staticCompositionLocalOf<HazeState?> { null }
 
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val cs = if (dark) darkColorScheme(primary = Blue, background = Color(0xFF05070D), surface = Color(0xFF1C1C1E),
         onBackground = Color.White, onSurface = Color.White)
-    else lightColorScheme(primary = Color(0xFF007AFF), background = Color(0xFFEEF1F8), surface = Color.White,
+    else lightColorScheme(primary = Color(0xFF007AFF), background = Color(0xFFF2F2F7), surface = Color.White,
         onBackground = Color(0xFF0B0B0F), onSurface = Color(0xFF0B0B0F))
     MaterialTheme(colorScheme = cs, content = content)
 }
 
-// ───────────── الخلفية: ألوان ناعمة + كور ملوّنة (عشان الـ blur يبان) ─────────────
+// ───────────── الخلفية (هادية، بس فيها تفاصيل عشان الزجاج يبان) ─────────────
 
 @Composable
 private fun Blobs(modifier: Modifier) {
     val dark = isSystemInDarkTheme()
-    val k = if (dark) 1f else 0.75f
+    val k = if (dark) 1f else 0.7f
     Box(modifier.drawBehind {
         val w = size.width; val h = size.height
         fun glow(c: Color, cx: Float, cy: Float, r: Float, a: Float) =
             drawCircle(Brush.radialGradient(listOf(c.copy(a * k), Color.Transparent), Offset(cx, cy), r), r, Offset(cx, cy))
         fun orb(c1: Color, c2: Color, cx: Float, cy: Float, r: Float) =
-            drawCircle(Brush.linearGradient(listOf(c1.copy(0.95f * k), c2.copy(0.9f * k)),
+            drawCircle(Brush.linearGradient(listOf(c1.copy(0.95f * k), c2.copy(0.95f * k)),
                 Offset(cx - r, cy - r), Offset(cx + r, cy + r)), r, Offset(cx, cy))
-        glow(Color(0xFF0A84FF), w * 0.10f, h * 0.10f, w * 1.0f, 0.50f)
-        glow(Color(0xFFBF5AF2), w * 1.00f, h * 0.48f, w * 0.9f, 0.42f)
-        glow(Color(0xFFFF375F), w * 0.05f, h * 0.82f, w * 0.8f, 0.28f)
-        glow(Color(0xFF64D2FF), w * 0.90f, h * 1.00f, w * 0.8f, 0.30f)
-        orb(Color(0xFF30D5FF), Color(0xFF0A84FF), w * 0.84f, h * 0.17f, w * 0.15f)
-        orb(Color(0xFFFF9F0A), Color(0xFFFF375F), w * 0.10f, h * 0.50f, w * 0.11f)
-        orb(Color(0xFFBF5AF2), Color(0xFF5E5CE6), w * 0.74f, h * 0.70f, w * 0.19f)
-        orb(Color(0xFF32D74B), Color(0xFF30D5C8), w * 0.20f, h * 0.90f, w * 0.10f)
+        glow(Color(0xFF1E4FD8), w * 0.10f, h * 0.10f, w * 1.0f, 0.42f)
+        glow(Color(0xFF5B3FD0), w * 1.00f, h * 0.50f, w * 0.9f, 0.32f)
+        glow(Color(0xFF1B8FA8), w * 0.10f, h * 0.92f, w * 0.8f, 0.26f)
+        orb(Color(0xFF3A7BD5), Color(0xFF1F3F8F), w * 0.84f, h * 0.17f, w * 0.15f)
+        orb(Color(0xFF5E5CE6), Color(0xFF2A2A72), w * 0.12f, h * 0.52f, w * 0.11f)
+        orb(Color(0xFF2AA3B8), Color(0xFF14506B), w * 0.74f, h * 0.72f, w * 0.19f)
+        orb(Color(0xFF8E6BD8), Color(0xFF3B2A7A), w * 0.20f, h * 0.90f, w * 0.10f)
     })
 }
 
@@ -111,6 +110,10 @@ fun Backdrop(bg: HazeState, content: @Composable BoxScope.() -> Unit) {
         }
     }
 }
+
+@Composable
+fun Card(modifier: Modifier = Modifier, radius: Dp = 28.dp, content: @Composable BoxScope.() -> Unit) =
+    Glass(modifier, radius, false, LocalBg.current, content)
 
 // ───────────── الزجاج ─────────────
 
@@ -173,42 +176,38 @@ fun Thumb(url: String?, modifier: Modifier) {
 @Composable
 fun Pill(text: String, modifier: Modifier = Modifier, filled: Boolean = true, onClick: () -> Unit) {
     val dark = isSystemInDarkTheme()
-    val bg = if (filled) Brush.verticalGradient(listOf(Color(0xFF4DA3FF), Blue))
-             else Brush.verticalGradient(listOf(
-                 if (dark) Color.White.copy(0.18f) else Blue.copy(0.16f),
-                 if (dark) Color.White.copy(0.08f) else Blue.copy(0.08f)))
-    val rim = Brush.verticalGradient(listOf(Color.White.copy(if (filled) 0.65f else 0.40f), Color.White.copy(0.04f)))
-    Box(modifier.pressable(onClick).clip(CircleShape).background(bg).border(0.8.dp, rim, CircleShape)
-        .padding(horizontal = 22.dp, vertical = 11.dp), contentAlignment = Alignment.Center) {
-        Text(text, color = if (filled) Color.White else (if (dark) Color(0xFF6CB6FF) else Blue), fontWeight = FontWeight.SemiBold)
+    Glass(modifier.pressable(onClick), radius = 40.dp, strong = true) {
+        Box(Modifier.background(if (filled) Blue.copy(0.62f) else Color.Transparent)
+            .padding(horizontal = 22.dp, vertical = 11.dp), contentAlignment = Alignment.Center) {
+            Text(text, color = if (filled) Color.White else (if (dark) Color(0xFF6CB6FF) else Blue), fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 
 @Composable
 fun Chip(text: String, sel: Boolean, onClick: () -> Unit) {
     val c = LocalContentColor.current
-    Box(Modifier.pressable(onClick).clip(CircleShape)
-        .background(if (sel) Blue else c.copy(0.10f))
-        .border(0.8.dp, Color.White.copy(if (sel) 0.4f else 0.14f), CircleShape)
-        .padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Text(text, color = if (sel) Color.White else c, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+    Glass(Modifier.pressable(onClick), radius = 40.dp, strong = true) {
+        Box(Modifier.background(if (sel) Blue.copy(0.62f) else Color.Transparent).padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text(text, color = if (sel) Color.White else c, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        }
     }
 }
 
 @Composable
 fun Segmented(opts: List<String>, sel: Int, on: (Int) -> Unit) {
     val dark = isSystemInDarkTheme()
-    val c = LocalContentColor.current
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.copy(0.08f))
-        .border(0.8.dp, Color.White.copy(0.12f), RoundedCornerShape(14.dp)).padding(3.dp)) {
-        opts.forEachIndexed { i, o ->
-            val a = i == sel
-            Box(Modifier.weight(1f).clip(RoundedCornerShape(11.dp))
-                .background(if (a) (if (dark) Color.White.copy(0.20f) else Color.White) else Color.Transparent)
-                .then(if (a) Modifier.border(0.8.dp, Color.White.copy(if (dark) 0.28f else 0.9f), RoundedCornerShape(11.dp)) else Modifier)
-                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { on(i) }
-                .padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                Text(o, fontWeight = if (a) FontWeight.SemiBold else FontWeight.Normal, fontSize = 14.sp)
+    Glass(Modifier.fillMaxWidth(), radius = 16.dp, strong = true) {
+        Row(Modifier.padding(3.dp)) {
+            opts.forEachIndexed { i, o ->
+                val a = i == sel
+                Box(Modifier.weight(1f).clip(RoundedCornerShape(13.dp))
+                    .background(if (a) Color.White.copy(if (dark) 0.22f else 0.75f) else Color.Transparent)
+                    .then(if (a) Modifier.border(0.8.dp, Color.White.copy(if (dark) 0.35f else 1f), RoundedCornerShape(13.dp)) else Modifier)
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { on(i) }
+                    .padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                    Text(o, fontWeight = if (a) FontWeight.SemiBold else FontWeight.Normal, fontSize = 14.sp)
+                }
             }
         }
     }
@@ -216,10 +215,8 @@ fun Segmented(opts: List<String>, sel: Int, on: (Int) -> Unit) {
 
 @Composable
 fun IconBtn(icon: ImageVector, onClick: () -> Unit) {
-    val c = LocalContentColor.current
-    Box(Modifier.size(38.dp).pressable(onClick).clip(CircleShape).background(c.copy(0.10f))
-        .border(0.8.dp, Color.White.copy(0.18f), CircleShape), contentAlignment = Alignment.Center) {
-        Icon(icon, null, Modifier.size(18.dp))
+    Glass(Modifier.size(40.dp).pressable(onClick), radius = 20.dp, strong = true) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(18.dp)) }
     }
 }
 
@@ -258,7 +255,6 @@ fun App() {
     val full = rememberHazeState()
     CompositionLocalProvider(LocalFull provides full, LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
         Box(Modifier.fillMaxSize()) {
-            // الخلفية + المحتوى = مصدر الـ blur للشريط السفلي
             Box(Modifier.fillMaxSize().hazeSource(full)) {
                 Backdrop(bg) {
                     Box(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -343,7 +339,7 @@ fun HomeScreen() {
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { BigTitle("التحميلات") }
         item {
-            Glass(Modifier.fillMaxWidth()) {
+            Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextField(url, { url = it }, Modifier.fillMaxWidth(), singleLine = true, colors = tf(),
                         placeholder = { Text("الصق رابط الفيديو هنا", color = dim()) },
@@ -362,7 +358,7 @@ fun HomeScreen() {
         }
         if (!ready) item { Text(if (engineSt.isNotEmpty()) engineSt else "جاري تجهيز المحرك…", fontSize = 13.sp, color = dim()) }
         if (err.isNotEmpty()) item {
-            Glass(Modifier.fillMaxWidth(), radius = 22.dp) {
+            Card(Modifier.fillMaxWidth(), radius = 22.dp) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(err, color = Red, fontSize = 14.sp)
                     Pill("حمّل مباشرة", filled = false) { direct() }
@@ -372,7 +368,7 @@ fun HomeScreen() {
 
         info?.let { i ->
             item {
-                Glass(Modifier.fillMaxWidth()) {
+                Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Thumb(i.thumbnail, Modifier.fillMaxWidth().aspectRatio(16 / 9f)
                             .clip(RoundedCornerShape(18.dp)).background(Color.Gray.copy(0.2f)))
@@ -410,14 +406,14 @@ fun HomeScreen() {
 fun TaskRow(t: Task) {
     val ctx = LocalContext.current
     val p by animateFloatAsState(t.progress, label = "prog")
-    Glass(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth()) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Thumb(t.thumb, Modifier.size(60.dp).clip(RoundedCornerShape(16.dp)).background(Color.Gray.copy(0.2f)))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
                 Box(Modifier.fillMaxWidth().height(6.dp).clip(CircleShape).background(LocalContentColor.current.copy(0.12f))) {
                     Box(Modifier.fillMaxHeight().fillMaxWidth(p.coerceIn(0f, 1f)).clip(CircleShape)
-                        .background(Brush.horizontalGradient(listOf(Color(0xFF64D2FF), Blue))))
+                        .background(Blue))
                 }
                 Text(when (t.st) {
                     St.Queued -> "في الانتظار"
@@ -462,7 +458,7 @@ fun LibraryScreen() {
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { BigTitle("المكتبة") }
         item {
-            Glass(Modifier.fillMaxWidth(), radius = 22.dp) {
+            Card(Modifier.fillMaxWidth(), radius = 22.dp) {
                 TextField(q, { q = it }, Modifier.fillMaxWidth(), singleLine = true, colors = tf(),
                     placeholder = { Text("بحث", color = dim()) },
                     leadingIcon = { Icon(Icons.Rounded.Search, null, tint = dim()) })
@@ -470,7 +466,7 @@ fun LibraryScreen() {
         }
         if (list.isEmpty()) item { Text("لسه مفيش تنزيلات.", color = dim(), modifier = Modifier.padding(top = 8.dp)) }
         items(list, key = { it.uri }) { i ->
-            Glass(Modifier.fillMaxWidth()) {
+            Card(Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Box(Modifier.size(60.dp).clip(RoundedCornerShape(16.dp)).background(Blue.copy(0.15f)).clickable { openItem(ctx, i) },
                         contentAlignment = Alignment.Center) {
@@ -510,7 +506,7 @@ fun SettingsScreen() {
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { BigTitle("الإعدادات") }
         item {
-            Glass(Modifier.fillMaxWidth()) {
+            Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     SwitchRow("تحميل على الواي فاي فقط", Prefs.wifiOnly) { Prefs.wifiOnly = it; Prefs.save() }
                     SwitchRow("تضمين الترجمة افتراضيًا", Prefs.subs) { Prefs.subs = it; Prefs.save() }
@@ -527,7 +523,7 @@ fun SettingsScreen() {
             }
         }
         item {
-            Glass(Modifier.fillMaxWidth()) {
+            Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("محرك التحميل (yt-dlp)", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                     Text(if (ver.isNotEmpty()) "الإصدار: $ver" else "—", fontSize = 13.sp, color = dim())
@@ -538,7 +534,7 @@ fun SettingsScreen() {
             }
         }
         item {
-            Glass(Modifier.fillMaxWidth()) {
+            Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("كوكيز يوتيوب", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                     Text(if (hasCk) "مفعّلة ✓" else "غير مفعّلة", fontSize = 13.sp, color = if (hasCk) Green else dim())

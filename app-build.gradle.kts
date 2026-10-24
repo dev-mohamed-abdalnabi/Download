@@ -14,17 +14,25 @@ android {
         applicationId = "app.grab"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1)
+        versionName = "1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
         resourceConfigurations += listOf("en", "ar")
         ndk { abiFilters += listOf("arm64-v8a") }   // أغلب الموبايلات الحديثة، ويقلل الحجم للنص
+    }
+    signingConfigs {
+        create("grab") {
+            storeFile = file("grab.jks")
+            storePassword = "YmMVeFV8jnpGZdJyRfbL"
+            keyAlias = "grab"
+            keyPassword = "YmMVeFV8jnpGZdJyRfbL"
+        }
     }
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")   // للاستخدام الشخصي
+            signingConfig = signingConfigs.getByName("grab")
         }
     }
     compileOptions {
