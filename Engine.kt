@@ -37,7 +37,7 @@ class Task(
     var job: Job? = null
 }
 
-class Item(val title: String, val thumb: String?, val uri: String, val audio: Boolean)
+class Item(val title: String, val thumb: String?, val uri: String, val audio: Boolean, val src: String = "")
 
 object Incoming { val v = MutableStateFlow<String?>(null) }
 
@@ -46,13 +46,18 @@ object Prefs {
     var wifiOnly by mutableStateOf(false)
     var subs by mutableStateOf(false)
     var concurrent by mutableIntStateOf(2)
-    var audioFmt by mutableStateOf("mp3")
+    var audioFmt by mutableStateOf("m4a")
 
     fun load(c: Context) {
         sp = c.getSharedPreferences("p", 0)
         wifiOnly = sp.getBoolean("w", false); subs = sp.getBoolean("s", false)
-        concurrent = sp.getInt("c", 2); audioFmt = sp.getString("a", "mp3") ?: "mp3"
+        concurrent = sp.getInt("c", 2); audioFmt = sp.getString("a", "m4a") ?: "m4a"
     }
+    // آخر رابط كتبته/لصقته — بيفضل محفوظ حتى لو التطبيق اتقفل
+    var draft: String
+        get() = sp.getString("d", "") ?: ""
+        set(v) { sp.edit().putString("d", v).apply() }
+
     fun save() {
         sp.edit().putBoolean("w", wifiOnly).putBoolean("s", subs).putInt("c", concurrent).putString("a", audioFmt).apply()
     }
@@ -79,6 +84,7 @@ object Repo {
         try { Prefs.load(app) } catch (_: Throwable) {}
         sem = Semaphore(Prefs.concurrent.coerceIn(1, 3))
         loadLib()
+        loadTasks()
         hasCookies.value = cookieFile.exists() && cookieFile.length() > 0
         try {
             val nm = app.getSystemService(NotificationManager::class.java)
@@ -88,7 +94,7 @@ object Repo {
         scope.launch {
             try {
                 ensureEngine()
-                if (System.currentTimeMillis() - Prefs.sp.getLong("u", 0) > 86_400_000) { delay(30_000); updateBlocking() }
+                if (System.currentTimeMillis() - Prefs.sp.getLong("u", 0) > 43_200_000) { delay(30_000); updateBlocking() }
             } catch (e: Throwable) { status.value = clean(e) }
         }
     }
@@ -113,6 +119,8 @@ object Repo {
                 "يوتيوب طلب تأكيد إنك مش بوت. قفّل الـ VPN أو استورد ملف الكوكيز من الإعدادات."
             m.contains("Unable to resolve host", true) || m.contains("timed out", true) || m.contains("Network is unreachable", true) ->
                 "مشكلة في الاتصال بالنت"
+            m.contains("403") || m.contains("Forbidden", true) ->
+                "يوتيوب رفض التحميل (403). من الإعدادات اضغط «تحديث الآن» وجرّب تاني."
             m.contains("Private video", true) -> "الفيديو خاص"
             m.contains("Video unavailable", true) -> "الفيديو مش متاح"
             m.contains("age", true) && m.contains("confirm", true) -> "الفيديو مقيّد بالعمر، محتاج كوكيز"
@@ -129,7 +137,7 @@ object Repo {
         status.value = "جاري تحديث المحرك…"
         try {
             ensureEngine()
-            val r = YoutubeDL.getInstance().updateYoutubeDL(app)
+            val r = YoutubeDL.getInstance().updateYoutubeDL(app, YoutubeDL.UpdateChannel.NIGHTLY)
             Prefs.sp.edit().putLong("u", System.currentTimeMillis()).apply()
             status.value = if (r?.name == "DONE") "تم التحديث ✓" else "المحرك محدّث ✓"
         } catch (e: Throwable) { status.value = "فشل التحديث: " + clean(e) }
@@ -150,17 +158,32 @@ object Repo {
 
     // ───── استراتيجيات يوتيوب: بنجرّب واحدة ورا التانية لحد ما واحدة تنجح ─────
     private val ytArgs = listOf<String?>(
-        "youtube:player_client=android_vr",     // سريع، من غير JS ولا PO token، ومش بيتخنق
-        "youtube:player_client=tv",
-        null,                                   // الافتراضي
-        "youtube:player_client=ios,mweb"
+        "youtube:player_client=android_vr",     // 0: من غير JS، بس أحيانًا بيرجّع 403 أو 360p بس
+        "youtube:player_client=android",        // 1
+        "youtube:player_client=tv",             // 2
+        null                                    // 3: الافتراضي
     )
+    // ترتيب المحاولات: لو فيه كوكيز نبدأ بالعملاء اللي بيدعموها
+    private fun order(url: String): List<Int> =
+        if (!isYt(url)) listOf(0, 1) else if (hasCookies.value) listOf(2, 3, 1, 0) else listOf(0, 1, 2, 3)
+
+    // أخطاء مفيش فايدة من تكرارها
+    private fun fatal(e: Throwable): Boolean {
+        val m = e.message ?: return false
+        return listOf("Private video", "Video unavailable", "Unsupported URL", "has been removed", "members-only",
+            "not available in your country", "copyright", "This video is not available").any { m.contains(it, true) }
+    }
+    private fun netErr(e: Throwable): Boolean {
+        val m = e.message ?: return false
+        return listOf("Unable to resolve host", "timed out", "Network is unreachable", "Connection reset").any { m.contains(it, true) }
+    }
     private fun isYt(u: String) = u.contains("youtube.com", true) || u.contains("youtu.be", true) || u.contains("youtube-nocookie.com", true)
 
     private fun common(r: YoutubeDLRequest, strat: Int, url: String) {
         r.addOption("--socket-timeout", "10")
-        r.addOption("--retries", "5")
-        r.addOption("--fragment-retries", "10")
+        r.addOption("--retries", "3")
+        r.addOption("--fragment-retries", "5")
+        r.addOption("--extractor-retries", "1")
         if (isYt(url)) ytArgs.getOrNull(strat)?.let { r.addOption("--extractor-args", it) }
         if (hasCookies.value && cookieFile.exists()) r.addOption("--cookies", cookieFile.absolutePath)
     }
@@ -168,8 +191,8 @@ object Repo {
     suspend fun fetch(url: String): VideoInfo = withContext(Dispatchers.IO) {
         ensureEngine()
         var last: Throwable? = null
-        val n = if (isYt(url)) 2 else 1   // المعاينة لازم تكون سريعة
-        for (i in 0 until n) {
+        val tries = order(url).take(if (isYt(url)) 2 else 1)   // المعاينة لازم تكون سريعة
+        for (i in tries) {
             try {
                 return@withContext YoutubeDL.getInstance().getInfo(
                     YoutubeDLRequest(url).apply { addOption("--no-playlist"); addOption("--no-warnings"); common(this, i, url) })
@@ -182,15 +205,19 @@ object Repo {
     fun enqueue(c: Context, t: Task) {
         if (t !in tasks) tasks.add(0, t)
         t.st = St.Queued; t.progress = 0f; t.msg = ""
+        saveTasks()
         try { c.startForegroundService(Intent(c, DownloadService::class.java)) } catch (_: Throwable) {}
-        t.job = scope.launch { sem.withPermit { run(t) } }
+        t.job = scope.launch { try { sem.withPermit { run(t) } } finally { saveTasks() } }
     }
 
     fun cancel(t: Task) {
         t.st = St.Canceled
         try { YoutubeDL.getInstance().destroyProcessById(t.id) } catch (_: Throwable) {}
         t.job?.cancel()
+        saveTasks()
     }
+
+    fun drop(t: Task) { tasks.remove(t); saveTasks() }
 
     private suspend fun run(t: Task) {
         if (t.st == St.Canceled) return
@@ -200,12 +227,12 @@ object Repo {
         val dir = File(app.cacheDir, "dl/${t.id}").apply { mkdirs() }
         try {
             ensureEngine()
-            val n = if (isYt(t.url)) ytArgs.size else 2
-            val plan = (0 until n).toMutableList()
-            var idx = 0; var updated = updatedThisSession; var last: Throwable? = null; var ok = false
+            val plan = order(t.url).toMutableList()
+            var idx = 0; var updated = updatedThisSession; var last: Throwable? = null; var ok = false; var netTries = 0
             while (idx < plan.size) {
                 val s = plan[idx++]
                 if (t.st == St.Canceled) return
+                t.msg = if (idx > 1) "بجرّب طريقة تانية ($idx/${plan.size})…" else ""
                 try { attempt(t, dir, s); ok = true; break }
                 catch (e: CancellationException) { throw e }
                 catch (e: Throwable) {
@@ -213,12 +240,19 @@ object Repo {
                     last = e
                     dir.deleteRecursively(); dir.mkdirs()
                     t.progress = 0f
-                    // آخر محاولة؟ حدّث المحرك مرة وجرّب تاني
-                    if (idx == plan.size && !updated) {
-                        updated = true; updatedThisSession = true
-                        t.msg = "بيحدّث المحرك ويحاول تاني…"
-                        updateBlocking(); plan.add(0); plan.add(1)
-                    } else delay(500)
+                    when {
+                        fatal(e) -> break
+                        netErr(e) -> {
+                            if (++netTries > 2) break
+                            t.msg = "مشكلة في النت… بحاول تاني"; plan.add(idx, s); delay(2000)
+                        }
+                        idx == plan.size && !updated -> {
+                            updated = true; updatedThisSession = true
+                            t.msg = "بيحدّث المحرك ويحاول تاني…"
+                            updateBlocking(); plan.addAll(order(t.url).take(2))
+                        }
+                        else -> delay(300)
+                    }
                 }
             }
             if (!ok) throw last ?: Exception("فشل التحميل")
@@ -234,11 +268,13 @@ object Repo {
         val r = YoutubeDLRequest(t.url)
         r.addOption("-o", "${dir.absolutePath}/%(title).80s.%(ext)s")
         r.addOption("--no-mtime"); common(r, strat, t.url)
-        r.addOption("--concurrent-fragments", "8"); r.addOption("--http-chunk-size", "10M")
+        r.addOption("--concurrent-fragments", "8")
         r.addOption(if (t.playlist) "--yes-playlist" else "--no-playlist")
         if (t.audio) {
-            r.addOption("-f", "ba/b")
-            r.addOption("-x"); r.addOption("--audio-format", Prefs.audioFmt); r.addOption("--audio-quality", "0")
+            // m4a: بيتحمّل جاهز من غير إعادة ترميز (أسرع بكتير من mp3 على الموبايل)
+            r.addOption("-f", if (Prefs.audioFmt == "m4a") "ba[ext=m4a]/ba/b" else "ba/b")
+            r.addOption("-x"); r.addOption("--audio-format", Prefs.audioFmt)
+            if (Prefs.audioFmt == "mp3") r.addOption("--audio-quality", "2")
         } else {
             r.addOption("-f", "bv*+ba/b")
             r.addOption("-S", if (t.height > 0) "res:${t.height},ext:mp4:m4a" else "ext:mp4:m4a")
@@ -260,7 +296,7 @@ object Repo {
         files.forEach { f ->
             val u = save(f) ?: return@forEach
             val isAudio = (MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "").startsWith("audio")
-            library.add(0, Item(f.nameWithoutExtension, t.thumb, u, isAudio))
+            library.add(0, Item(f.nameWithoutExtension, t.thumb, u, isAudio, t.url))
         }
         saveLib()
         t.progress = 1f; t.st = St.Done
@@ -294,19 +330,46 @@ object Repo {
         app.getSystemService(NotificationManager::class.java).notify(t.id.hashCode(), n)
     }
 
+    private val taskFile get() = File(app.filesDir, "tasks.json")
+    private fun loadTasks() {
+        try {
+            val a = JSONArray(taskFile.readText())
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                val t = Task(o.getString("id"), o.getString("url"), o.getString("t"), o.optString("th").ifEmpty { null },
+                    o.getBoolean("a"), o.getInt("h"), o.getBoolean("s"), o.getBoolean("p"))
+                val saved = try { St.valueOf(o.getString("st")) } catch (_: Throwable) { St.Failed }
+                if (saved == St.Canceled || saved == St.Failed) { t.st = saved; t.msg = o.optString("m") }
+                else { t.st = St.Failed; t.msg = "اتوقف لما التطبيق اتقفل — اضغط إعادة" }
+                tasks.add(t)
+            }
+        } catch (_: Throwable) {}
+    }
+    fun saveTasks() {
+        try {
+            val a = JSONArray()
+            tasks.toList().forEach { t ->
+                a.put(JSONObject().put("id", t.id).put("url", t.url).put("t", t.title).put("th", t.thumb ?: "")
+                    .put("a", t.audio).put("h", t.height).put("s", t.subs).put("p", t.playlist)
+                    .put("st", t.st.name).put("m", t.msg))
+            }
+            taskFile.writeText(a.toString())
+        } catch (_: Throwable) {}
+    }
+
     private val libFile get() = File(app.filesDir, "lib.json")
     private fun loadLib() {
         try {
             val a = JSONArray(libFile.readText())
             for (i in 0 until a.length()) {
                 val o = a.getJSONObject(i)
-                library.add(Item(o.getString("t"), o.optString("th").ifEmpty { null }, o.getString("u"), o.getBoolean("a")))
+                library.add(Item(o.getString("t"), o.optString("th").ifEmpty { null }, o.getString("u"), o.getBoolean("a"), o.optString("s")))
             }
         } catch (_: Throwable) {}
     }
     fun saveLib() {
         val a = JSONArray()
-        library.forEach { a.put(JSONObject().put("t", it.title).put("th", it.thumb ?: "").put("u", it.uri).put("a", it.audio)) }
+        library.forEach { a.put(JSONObject().put("t", it.title).put("th", it.thumb ?: "").put("u", it.uri).put("a", it.audio).put("s", it.src)) }
         libFile.writeText(a.toString())
     }
     fun remove(i: Item) {
