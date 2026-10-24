@@ -16,14 +16,14 @@ jobs:
 
       - name: Organize flat files into project folders
         run: |
-          mkdir -p app/src/main/java/app/grab app/src/main/res/values app/src/main/res/drawable app/src/main/res/mipmap-anydpi
+          mkdir -p app/src/main/java/app/grab app/src/main/res/values app/src/main/res/drawable-xxxhdpi app/src/main/res/mipmap-anydpi
           cp app-build.gradle.kts app/build.gradle.kts
           cp proguard-rules.pro app/proguard-rules.pro
           cp grab.jks app/grab.jks
           cp AndroidManifest.xml app/src/main/AndroidManifest.xml
           cp Engine.kt MainActivity.kt ShareActivity.kt LoginActivity.kt PlayerActivity.kt UI.kt app/src/main/java/app/grab/
           cp themes.xml colors.xml app/src/main/res/values/
-          cp ic_fg.xml app/src/main/res/drawable/
+          cp ic_logo.png app/src/main/res/drawable-xxxhdpi/ic_logo.png
           cp ic_launcher.xml app/src/main/res/mipmap-anydpi/
 
       - name: Download font (Tajawal)
