@@ -5,6 +5,7 @@ plugins {
 }
 
 val ytdl = "0.18.1"
+val haze = "1.6.0-beta02"
 
 android {
     namespace = "app.grab"
@@ -44,6 +45,8 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("dev.chrisbanes.haze:haze:$haze")
+    implementation("dev.chrisbanes.haze:haze-materials:$haze")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("io.github.junkfood02.youtubedl-android:library:$ytdl")
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:$ytdl")
