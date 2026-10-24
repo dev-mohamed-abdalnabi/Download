@@ -26,6 +26,14 @@ jobs:
           cp ic_fg.xml app/src/main/res/drawable/
           cp ic_launcher.xml app/src/main/res/mipmap-anydpi/
 
+      - name: Download font (Tajawal)
+        run: |
+          mkdir -p app/src/main/res/font
+          base=https://github.com/google/fonts/raw/main/ofl/tajawal
+          for w in Regular Medium Bold ExtraBold; do
+            curl -fsSL "$base/Tajawal-$w.ttf" -o "app/src/main/res/font/tajawal_$(echo $w | tr A-Z a-z).ttf"
+          done
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
