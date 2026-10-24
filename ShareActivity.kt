@@ -36,10 +36,18 @@ class ShareActivity : ComponentActivity() {
         val all = urlsOf(intent?.getStringExtra(Intent.EXTRA_TEXT) ?: "")
         // وضع التحميل السريع، أو أكتر من رابط: ابدأ فورًا بدون أي أسئلة
         if (Prefs.shareQuick || all.size > 1) {
-            (if (all.isEmpty()) listOf(link) else all).forEachIndexed { n, l ->
+            val links = if (all.isEmpty()) listOf(link) else all
+            val fresh = links.filter { Repo.dupOf(it, false) == null }
+            fresh.forEachIndexed { n, l ->
                 Repo.enqueue(this, Task("${System.nanoTime()}_$n", l, l, null, false, 0, Prefs.subs, false))
             }
-            Toast.makeText(this, if (all.size > 1) "اتضاف ${all.size} روابط للتحميل" else "بدأ التحميل", Toast.LENGTH_SHORT).show()
+            val skipped = links.size - fresh.size
+            Toast.makeText(this, when {
+                fresh.isEmpty() -> if (links.size > 1) "كل الروابط اتحمّلت قبل كده" else "الفيديو ده اتحمّل قبل كده"
+                skipped > 0 -> "اتضاف ${fresh.size}، واتخطّى $skipped اتحمّلوا قبل كده"
+                links.size > 1 -> "اتضاف ${links.size} روابط للتحميل"
+                else -> "بدأ التحميل"
+            }, Toast.LENGTH_SHORT).show()
             finish(); return
         }
         setContent { AppTheme { Popup() } }
@@ -65,7 +73,7 @@ class ShareActivity : ComponentActivity() {
 
         fun load() { loading = true; err = ""
             scope.launch {
-                try { info = Repo.fetch(link) } catch (e: Throwable) { err = Repo.clean(e) }
+                try { val i = Repo.fetch(link); info = i; Repo.addHistory(link, i.title ?: link, i.thumbnail) } catch (e: Throwable) { err = Repo.clean(e) }
                 loading = false
             }
         }
@@ -107,6 +115,8 @@ class ShareActivity : ComponentActivity() {
                                         overflow = TextOverflow.Ellipsis, color = cs.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
+                            if (Repo.dupOf(link, audio) != null)
+                                Text("⚠ ده اتحمّل قبل كده (أو بيتحمّل دلوقتي)", color = cs.tertiary, style = MaterialTheme.typography.bodySmall)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 FilterChip(!audio, { audio = false }, { Text("فيديو") })
                                 FilterChip(audio, { audio = true }, { Text("صوت ${Prefs.audioFmt.uppercase()}") })

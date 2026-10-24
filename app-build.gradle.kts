@@ -6,6 +6,7 @@ plugins {
 
 val ytdl = "0.18.1"
 val haze = "1.6.0-beta02"
+val media3 = "1.4.1"
 
 android {
     namespace = "app.grab"
@@ -39,7 +40,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
+    kotlinOptions {
+        jvmTarget = "17"
+        freeCompilerArgs += "-opt-in=androidx.media3.common.util.UnstableApi"
+    }
+    lint { checkReleaseBuilds = false }
     buildFeatures { compose = true }
     packaging {
         jniLibs { useLegacyPackaging = true }
@@ -58,4 +63,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("io.github.junkfood02.youtubedl-android:library:$ytdl")
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:$ytdl")
+    implementation("androidx.media3:media3-exoplayer:$media3")
+    implementation("androidx.media3:media3-ui:$media3")
+    implementation("androidx.media3:media3-session:$media3")
 }

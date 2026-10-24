@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 
 package app.grab
 
@@ -34,7 +34,10 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -191,14 +194,31 @@ private val AppType = Typography(
     labelSmall = T0.labelSmall.f(FontWeight.Medium)
 )
 
+// ألوان رئيسية بديلة (لون التمييز): أزرق، أخضر، بنفسجي، برتقالي، وردي
+private val AccentDots = listOf(Color(0xFF0B57D0), Color(0xFF1B6C3A), Color(0xFF6750A4), Color(0xFF9A4600), Color(0xFFA8305F))
+
+private fun accentScheme(a: Int, dark: Boolean): ColorScheme {
+    val base = if (dark) DarkFallback else LightFallback
+    return when (a) {
+        2 -> if (dark) base.copy(primary = Color(0xFF8FD8A0), onPrimary = Color(0xFF00391A), primaryContainer = Color(0xFF005226), onPrimaryContainer = Color(0xFFB5F2C4))
+             else base.copy(primary = Color(0xFF1B6C3A), primaryContainer = Color(0xFFB5F2C4), onPrimaryContainer = Color(0xFF00210D))
+        3 -> if (dark) base.copy(primary = Color(0xFFD0BCFF), onPrimary = Color(0xFF381E72), primaryContainer = Color(0xFF4F378B), onPrimaryContainer = Color(0xFFEADDFF))
+             else base.copy(primary = Color(0xFF6750A4), primaryContainer = Color(0xFFEADDFF), onPrimaryContainer = Color(0xFF21005D))
+        4 -> if (dark) base.copy(primary = Color(0xFFFFB68A), onPrimary = Color(0xFF512300), primaryContainer = Color(0xFF743400), onPrimaryContainer = Color(0xFFFFDBC8))
+             else base.copy(primary = Color(0xFF9A4600), primaryContainer = Color(0xFFFFDBC8), onPrimaryContainer = Color(0xFF331200))
+        5 -> if (dark) base.copy(primary = Color(0xFFFFB0CB), onPrimary = Color(0xFF640032), primaryContainer = Color(0xFF86144A), onPrimaryContainer = Color(0xFFFFD9E3))
+             else base.copy(primary = Color(0xFFA8305F), primaryContainer = Color(0xFFFFD9E3), onPrimaryContainer = Color(0xFF3E001D))
+        else -> base
+    }
+}
+
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+    val dark = when (Prefs.theme) { 1 -> false; 2 -> true; else -> isSystemInDarkTheme() }
     val ctx = LocalContext.current
     val cs = when {
-        Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
-        dark -> DarkFallback
-        else -> LightFallback
+        Prefs.accent == 0 && Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
+        else -> accentScheme(Prefs.accent, dark)
     }
     MaterialTheme(colorScheme = cs, typography = AppType, content = content)
 }
@@ -634,6 +654,12 @@ fun HomeScreen(bottom: Dp) {
     var h by remember { mutableIntStateOf(0) }
     var subs by remember { mutableStateOf(Prefs.subs) }
     var playlist by remember { mutableStateOf(false) }
+    var dup by remember { mutableStateOf<Dup?>(null) }
+    var pl by remember { mutableStateOf<PlInfo?>(null) }
+    var plSel by remember { mutableStateOf(setOf<Int>()) }
+    var plFrom by remember { mutableStateOf("") }
+    var plTo by remember { mutableStateOf("") }
+    var skipDup by remember { mutableStateOf(false) }
     var clipOn by remember { mutableStateOf(false) }
     var clipFrom by remember { mutableStateOf("") }
     var clipTo by remember { mutableStateOf("") }
@@ -642,7 +668,7 @@ fun HomeScreen(bottom: Dp) {
     val ready by Repo.ready
     val engineSt by Repo.status
 
-    BackHandler(enabled = info != null) { info = null }
+    BackHandler(enabled = info != null || pl != null) { if (pl != null) pl = null else info = null }
 
     fun newTask(title: String, thumb: String?, pl: Boolean) =
         Task(System.nanoTime().toString(), url.trim(), title, thumb, kind == 1, h, subs, pl)
@@ -665,24 +691,41 @@ fun HomeScreen(bottom: Dp) {
         if (u.isEmpty()) return
         Incoming.clip.value?.let { if (u.contains(it)) { Prefs.lastClip = it; Incoming.clip.value = null } }
         val all = urlsOf(u)
-        if (all.size > 1) {   // دفعة روابط: كلها تتضاف للتحميل مباشرة
-            all.forEachIndexed { n, l -> Repo.enqueue(ctx, Task("${System.nanoTime()}_$n", l, l, null, kind == 1, 0, Prefs.subs, false)) }
+        if (all.size > 1) {   // دفعة روابط: كلها تتضاف للتحميل مباشرة (بنتخطى اللي اتحمّل قبل كده)
+            val fresh = all.filter { Repo.dupOf(it, kind == 1) == null }
+            fresh.forEachIndexed { n, l -> Repo.enqueue(ctx, Task("${System.nanoTime()}_$n", l, l, null, kind == 1, 0, Prefs.subs, false)) }
             url = ""; err = ""; info = null
-            scope.launch { snack.currentSnackbarData?.dismiss(); snack.showSnackbar("اتضاف ${all.size} روابط للتحميل") }
+            val skipped = all.size - fresh.size
+            val m = when {
+                fresh.isEmpty() -> "كل الروابط اتحمّلت قبل كده"
+                skipped == 0 -> "اتضاف ${all.size} روابط للتحميل"
+                else -> "اتضاف ${fresh.size}، واتخطّى $skipped اتحمّلوا قبل كده"
+            }
+            scope.launch { snack.currentSnackbarData?.dismiss(); snack.showSnackbar(m) }
             return
         }
+        if (!playlist && !skipDup) { Repo.dupOf(u, kind == 1)?.let { dup = it; return } }
+        skipDup = false
         focus.clearFocus()
-        err = ""; info = null
-        if (playlist) { direct(); return }
+        err = ""; info = null; pl = null
+        if (playlist) {   // نعرض عناوين القائمة عشان المستخدم يختار منها
+            loading = true
+            scope.launch {
+                try { val p = Repo.fetchPlaylist(u); pl = p; plSel = p.entries.indices.toSet(); plFrom = ""; plTo = "" }
+                catch (e: Throwable) { err = Repo.clean(e) }
+                loading = false
+            }
+            return
+        }
         loading = true
         scope.launch {
-            try { info = Repo.fetch(u); h = 0 } catch (e: Throwable) { err = Repo.clean(e) }
+            try { val i = Repo.fetch(u); info = i; h = 0; Repo.addHistory(u, i.title ?: u, i.thumbnail) } catch (e: Throwable) { err = Repo.clean(e) }
             loading = false
         }
     }
     LaunchedEffect(inc) { inc?.let { url = it; Incoming.v.value = null; go() } }
 
-    val compact = Repo.tasks.isNotEmpty() || info != null || loading
+    val compact = Repo.tasks.isNotEmpty() || info != null || pl != null || loading
 
     // توهّج لوني ناعم ثابت في أعلى الشاشة
     Box(Modifier.fillMaxSize().drawBehind {
@@ -806,6 +849,73 @@ fun HomeScreen(bottom: Dp) {
                 }
             }
 
+            pl?.let { p ->
+                item {
+                    Column(Modifier.padding(top = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(p.title.ifEmpty { "قائمة تشغيل" }, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text("${plSel.size} من ${p.entries.size} محدد", style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            FilterChip(plSel.size == p.entries.size, { plSel = if (plSel.size == p.entries.size) emptySet() else p.entries.indices.toSet() },
+                                { Text("تحديد الكل") })
+                            OutlinedTextField(plFrom, { plFrom = it.filter { c -> c.isDigit() }.take(4) }, Modifier.weight(1f),
+                                label = { Text("من رقم") }, singleLine = true)
+                            OutlinedTextField(plTo, { plTo = it.filter { c -> c.isDigit() }.take(4) }, Modifier.weight(1f),
+                                label = { Text("إلى رقم") }, singleLine = true)
+                            FilledTonalButton({
+                                val a = ((plFrom.toIntOrNull() ?: 1) - 1).coerceAtLeast(0)
+                                val b = (plTo.toIntOrNull() ?: p.entries.size).coerceAtMost(p.entries.size)
+                                plSel = (a until b).toSet()
+                            }) { Text("حدّد") }
+                        }
+                        Switcher(listOf("فيديو", "صوت"), kind) { kind = it }
+                        BigButton("حمّل المحدد (${plSel.size})", icon = IcDownload, enabled = plSel.isNotEmpty()) {
+                            hap.performHapticFeedback(HapticFeedbackType.LongPress)
+                            val chosen = p.entries.filterIndexed { n, _ -> n in plSel }
+                            val fresh = chosen.filter { Repo.dupOf(it.url, kind == 1) == null }
+                            fresh.forEachIndexed { n, e ->
+                                Repo.enqueue(ctx, Task("${System.nanoTime()}_$n", e.url, e.title, e.thumb, kind == 1, 0, Prefs.subs, false))
+                            }
+                            val skipped = chosen.size - fresh.size
+                            pl = null; url = ""; err = ""
+                            scope.launch {
+                                snack.currentSnackbarData?.dismiss()
+                                snack.showSnackbar(if (skipped == 0) "اتضاف ${fresh.size} للتحميل" else "اتضاف ${fresh.size}، واتخطّى $skipped اتحمّلوا قبل كده")
+                            }
+                        }
+                    }
+                }
+                itemsIndexed(p.entries) { n, e ->
+                    val on = n in plSel
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+                        .clickable { plSel = if (on) plSel - n else plSel + n }.padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Checkbox(on, null)
+                        Thumb(e.thumb, Modifier.size(width = 84.dp, height = 52.dp).clip(RoundedCornerShape(14.dp)).background(cs.surfaceContainerHigh))
+                        Column(Modifier.weight(1f)) {
+                            Text("${n + 1}. ${e.title}", maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+                            if (e.dur > 0) Text(fmt(e.dur), style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+
+            // آخر الروابط اللي جلبتها (لما مفيش حاجة مكتوبة)
+            if (info == null && pl == null && url.isBlank() && Repo.history.isNotEmpty()) {
+                item {
+                    Row(Modifier.padding(top = 28.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("آخر الروابط", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                        TextButton({ Repo.clearHistory() }) { Text("مسح", color = cs.error) }
+                    }
+                }
+                items(Repo.history.toList(), key = { "h" + it.url }) { h0 ->
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable { url = h0.url; go() }.padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Thumb(h0.thumb, Modifier.size(width = 84.dp, height = 52.dp).clip(RoundedCornerShape(14.dp)).background(cs.surfaceContainerHigh))
+                        Text(h0.title, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+                    }
+                }
+            }
+
             if (Repo.tasks.isNotEmpty()) {
                 item {
                     Row(Modifier.padding(top = 32.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically,
@@ -824,6 +934,21 @@ fun HomeScreen(bottom: Dp) {
                 items(Repo.tasks, key = { it.id }) { TaskRow(it, Modifier.animateItem()) }
             } else if (info == null && err.isEmpty() && !loading) item { HowTo() }
         }
+    }
+
+    dup?.let { d ->
+        AlertDialog(
+            onDismissRequest = { dup = null },
+            title = { Text(if (d.item != null) "اتحمّل قبل كده" else "ده بيتحمّل دلوقتي") },
+            text = { Text("\"${d.title}\"", maxLines = 3, overflow = TextOverflow.Ellipsis) },
+            confirmButton = {
+                Row {
+                    if (d.item != null) TextButton({ openItem(ctx, d.item); dup = null }) { Text("فتح الملف") }
+                    TextButton({ dup = null; skipDup = true; go() }) { Text("حمّل تاني") }
+                }
+            },
+            dismissButton = { TextButton({ dup = null }) { Text("إلغاء") } }
+        )
     }
 }
 
@@ -870,11 +995,12 @@ fun TaskRow(t: Task, modifier: Modifier = Modifier) {
         }
         when (t.st) {
             St.Running, St.Queued -> Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (t.st == St.Queued) IconButton({ Repo.startNow(ctx, t) }) { Icon(Icons.Rounded.PlayArrow, "ابدأ الآن") }
                 IconButton({ Repo.pause(t) }) { Icon(IcPause, "إيقاف مؤقت") }
                 FilledTonalIconButton({ Repo.cancel(t) }) { Icon(Icons.Rounded.Close, "إلغاء") }
             }
             St.Failed, St.Canceled -> Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                FilledTonalIconButton({ Repo.enqueue(ctx, t) }) { Icon(Icons.Rounded.Refresh, "إعادة") }
+                FilledTonalIconButton({ if (t.waitNet) Repo.startNow(ctx, t) else Repo.enqueue(ctx, t) }) { Icon(Icons.Rounded.Refresh, "إعادة") }
                 IconButton({ Repo.drop(t) }) { Icon(Icons.Rounded.Delete, "حذف") }
             }
             else -> {}
@@ -884,9 +1010,22 @@ fun TaskRow(t: Task, modifier: Modifier = Modifier) {
 
 // ═══════════════════════════ المكتبة (شبكة صور) ═══════════════════════════
 
-private fun openItem(c: Context, i: Item) = try {
-    c.startActivity(Intent(c, PlayerActivity::class.java).setData(Uri.parse(i.uri))
-        .putExtra("t", i.title).putExtra("a", i.audio))
+// بيفتح المشغّل. للصوت: queue = قائمة التشغيل كلها وبتبدأ من الملف المختار
+private fun openItem(c: Context, i: Item, queue: List<Item> = listOf(i)) = try {
+    val q = if (queue.any { it.uri == i.uri }) queue else listOf(i)
+    c.startActivity(Intent(c, PlayerActivity::class.java)
+        .putStringArrayListExtra("u", ArrayList(q.map { it.uri }))
+        .putStringArrayListExtra("t", ArrayList(q.map { it.title }))
+        .putExtra("i", q.indexOfFirst { it.uri == i.uri }).putExtra("a", i.audio))
+} catch (_: Throwable) {}
+
+private fun shareItems(c: Context, l: List<Item>) = try {
+    if (l.size == 1) shareItem(c, l[0]) else {
+        val s = Intent(Intent.ACTION_SEND_MULTIPLE).setType("*/*")
+            .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(l.map { Uri.parse(it.uri) }))
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        c.startActivity(Intent.createChooser(s, null))
+    }
 } catch (_: Throwable) {}
 
 private fun shareItem(c: Context, i: Item) = try {
@@ -902,6 +1041,11 @@ fun LibraryScreen(bottom: Dp) {
     var q by remember { mutableStateOf("") }
     var f by remember { mutableIntStateOf(0) }
     var del by remember { mutableStateOf<Item?>(null) }
+    var sel by remember { mutableStateOf(setOf<String>()) }       // التحديد المتعدد (بالضغط المطوّل)
+    var delMany by remember { mutableStateOf(false) }
+    val selecting = sel.isNotEmpty()
+    BackHandler(enabled = selecting) { sel = emptySet() }
+    LaunchedEffect(Unit) { Repo.scope.launch { Repo.pruneLibrary() } }
     val list = Repo.library.filter { (f == 0 || (f == 1 && !it.audio) || (f == 2 && it.audio)) && it.title.contains(q, true) }
     val full: androidx.compose.foundation.lazy.grid.LazyGridItemSpanScope.() -> GridItemSpan = { GridItemSpan(maxLineSpan) }
 
@@ -909,6 +1053,16 @@ fun LibraryScreen(bottom: Dp) {
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = bottom),
         horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item(span = full) { Header("المكتبة", if (Repo.library.isEmpty()) null else "${Repo.library.size} ملف") }
+        if (selecting) item(span = full) {
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(cs.secondaryContainer)
+                .padding(start = 18.dp, end = 6.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("${sel.size} محدد", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = cs.onSecondaryContainer)
+                TextButton({ sel = list.map { it.uri }.toSet() }) { Text("الكل") }
+                IconButton({ shareItems(ctx, Repo.library.filter { it.uri in sel }) }) { Icon(Icons.Rounded.Share, "مشاركة") }
+                IconButton({ delMany = true }) { Icon(Icons.Rounded.Delete, "حذف") }
+                IconButton({ sel = emptySet() }) { Icon(Icons.Rounded.Close, "إلغاء التحديد") }
+            }
+        }
         item(span = full) {
             TextField(
                 value = q, onValueChange = { q = it }, singleLine = true,
@@ -927,6 +1081,15 @@ fun LibraryScreen(bottom: Dp) {
                 }
             }
         }
+        val audios = list.filter { it.audio }
+        if (audios.isNotEmpty() && f != 1 && !selecting) item(span = full) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FilledTonalButton({ openItem(ctx, audios[0], audios) }) {
+                    Icon(Icons.Rounded.PlayArrow, null, Modifier.size(20.dp)); Spacer(Modifier.width(6.dp)); Text("تشغيل الصوت (${audios.size})")
+                }
+                OutlinedButton({ val sh = audios.shuffled(); openItem(ctx, sh[0], sh) }) { Text("عشوائي") }
+            }
+        }
         if (list.isEmpty()) item(span = full) {
             EmptyState(Icons.Rounded.PlayArrow, if (Repo.library.isEmpty()) "المكتبة فاضية" else "مفيش نتائج",
                 if (Repo.library.isEmpty()) "اللي تحمّله هيظهر هنا." else "جرّب كلمة تانية أو فلتر تاني.")
@@ -934,12 +1097,23 @@ fun LibraryScreen(bottom: Dp) {
         items(list, key = { it.uri }) { i ->
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.fillMaxWidth().aspectRatio(1.35f).clip(RoundedCornerShape(28.dp))
-                    .background(cs.surfaceContainerHigh).clickable { openItem(ctx, i) }, contentAlignment = Alignment.Center) {
+                    .background(cs.surfaceContainerHigh).combinedClickable(
+                        onClick = {
+                            if (selecting) sel = if (i.uri in sel) sel - i.uri else sel + i.uri
+                            else openItem(ctx, i, if (i.audio) list.filter { it.audio } else listOf(i))
+                        },
+                        onLongClick = { sel = if (i.uri in sel) sel - i.uri else sel + i.uri }), contentAlignment = Alignment.Center) {
                     if (i.thumb != null) Thumb(i.thumb, Modifier.fillMaxSize())
                     else CookieIcon(if (i.audio) IcMusic else Icons.Rounded.PlayArrow, 72.dp, cs.primaryContainer, cs.onPrimaryContainer, spin = false)
                     Box(Modifier.align(Alignment.TopStart).padding(10.dp).clip(CircleShape)
                         .background(Color.Black.copy(alpha = 0.55f)).padding(7.dp)) {
                         Icon(if (i.audio) IcMusic else Icons.Rounded.PlayArrow, null, Modifier.size(16.dp), tint = Color.White)
+                    }
+                    if (i.uri in sel) {
+                        Box(Modifier.fillMaxSize().background(cs.primary.copy(alpha = 0.35f)))
+                        Box(Modifier.align(Alignment.TopEnd).padding(10.dp).clip(CircleShape).background(cs.primary).padding(6.dp)) {
+                            Icon(Icons.Rounded.Check, null, Modifier.size(16.dp), tint = cs.onPrimary)
+                        }
                     }
                 }
                 Text(i.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall,
@@ -953,6 +1127,19 @@ fun LibraryScreen(bottom: Dp) {
             }
         }
     }
+
+    if (delMany) AlertDialog(
+        onDismissRequest = { delMany = false },
+        title = { Text("حذف ${sel.size} ملف؟") },
+        text = { Text("هيتمسحوا من جهازك نهائيًا.") },
+        confirmButton = {
+            TextButton({
+                Repo.library.filter { it.uri in sel }.forEach { Repo.remove(it) }
+                sel = emptySet(); delMany = false
+            }) { Text("حذف", color = MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = { TextButton({ delMany = false }) { Text("إلغاء") } }
+    )
 
     del?.let { d ->
         AlertDialog(
@@ -968,6 +1155,20 @@ fun LibraryScreen(bottom: Dp) {
 // ═══════════════════════════ الإعدادات ═══════════════════════════
 
 @Composable
+private fun HourStepper(label: String, h: Int, modifier: Modifier = Modifier, on: (Int) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Row(modifier.clip(CircleShape).background(cs.surfaceContainerHigh).padding(4.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        IconButton({ on((h + 23) % 24) }, Modifier.size(44.dp)) { Text("−", style = MaterialTheme.typography.titleLarge) }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+            Text("%02d:00".format(h), style = MaterialTheme.typography.titleMedium)
+        }
+        IconButton({ on((h + 1) % 24) }, Modifier.size(44.dp)) { Text("+", style = MaterialTheme.typography.titleLarge) }
+    }
+}
+
+@Composable
 fun SettingsScreen(bottom: Dp) {
     val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
@@ -981,6 +1182,15 @@ fun SettingsScreen(bottom: Dp) {
         if (u != null) ckMsg = if (Repo.importCookies(u)) "تم استيراد الكوكيز ✓" else "الملف مش بصيغة cookies.txt صحيحة"
     }
     val fmts = listOf("mp3", "m4a", "opus")
+    val subOpts = listOf("ar.*,en.*", "ar.*", "en.*", "all,-live_chat")
+    val treePick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { u ->
+        if (u != null) {
+            try {
+                ctx.contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                Prefs.treeUri = u.toString(); Prefs.save()
+            } catch (_: Throwable) {}
+        }
+    }
 
     PageList(bottom) {
         item { Header("الإعدادات") }
@@ -1022,6 +1232,27 @@ fun SettingsScreen(bottom: Dp) {
             }
         }
         item {
+            Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                SettingRow(IcSubs, "لغة الترجمة")
+                Switcher(listOf("عربي + EN", "عربي", "English", "الكل"), subOpts.indexOf(Prefs.subLangs)) { Prefs.subLangs = subOpts[it]; Prefs.save() }
+                Footnote("«الكل» ممكن يحمّل ملفات كتير.")
+            }
+        }
+        item {
+            Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                SettingRow(IcDownload, "شكل اسم الملف")
+                Switcher(listOf("العنوان", "القناة", "التاريخ", "المعرّف"), Prefs.nameTpl) { Prefs.nameTpl = it; Prefs.save() }
+                Footnote(when (Prefs.nameTpl) {
+                    1 -> "القناة - العنوان"; 2 -> "2025-01-31 - العنوان"; 3 -> "العنوان [معرّف الفيديو]"; else -> "العنوان فقط"
+                })
+            }
+        }
+        item {
+            SettingRow(IcMusic, "غلاف وبيانات الصوت", "تضمين الصورة واسم القناة داخل الملف (MP3 وM4A)", onClick = { Prefs.embedMeta = !Prefs.embedMeta; Prefs.save() }) {
+                Toggle(Prefs.embedMeta) { Prefs.embedMeta = it; Prefs.save() }
+            }
+        }
+        item {
             SettingRow(IcDownload, "حفظ الصورة المصغّرة", "بتتحفظ في Pictures", onClick = { Prefs.saveThumb = !Prefs.saveThumb; Prefs.save() }) {
                 Toggle(Prefs.saveThumb) { Prefs.saveThumb = it; Prefs.save() }
             }
@@ -1034,9 +1265,22 @@ fun SettingsScreen(bottom: Dp) {
 
         item { SectionTitle("مكان الحفظ") }
         item {
+            SettingRow(IcLayers, "مجلد مخصص", if (Prefs.treeUri.isEmpty()) "الافتراضي: Movies / Music"
+                else Uri.decode(Uri.parse(Prefs.treeUri).lastPathSegment ?: Prefs.treeUri)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    FilledTonalButton({ treePick.launch(null) }) { Text("اختيار") }
+                    if (Prefs.treeUri.isNotEmpty()) TextButton({ Prefs.treeUri = ""; Prefs.save() }) { Text("إلغاء", color = cs.error) }
+                }
+            }
+        }
+        if (Prefs.treeUri.isEmpty()) item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(Prefs.folder, { Prefs.folder = it.filter { c -> c != '/' && c != '\\' }.take(30); Prefs.save() },
                     Modifier.fillMaxWidth(), label = { Text("اسم المجلد (داخل Movies / Music)") }, singleLine = true)
+            }
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Switcher(listOf("عادي", "حسب الموقع", "حسب القناة"), Prefs.organize) { Prefs.organize = it; Prefs.save() }
                 Footnote("حسب الموقع: YouTube / Instagram… وحسب القناة: مجلد باسم صاحب الفيديو.")
             }
@@ -1045,7 +1289,45 @@ fun SettingsScreen(bottom: Dp) {
             Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 SettingRow(IcLayers, "تحميلات متزامنة")
                 Switcher(listOf("1", "2", "3"), Prefs.concurrent - 1) { Prefs.concurrent = it + 1; Prefs.save() }
-                Footnote("يسري بعد إعادة تشغيل التطبيق.")
+            }
+        }
+
+        item { SectionTitle("الجدولة") }
+        item {
+            SettingRow(IcLayers, "تحميل في ساعات معينة", "التحميلات بتستنى لحد الموعد وبتبدأ لوحدها", onClick = { Prefs.schedOn = !Prefs.schedOn; Prefs.save() }) {
+                Toggle(Prefs.schedOn) { Prefs.schedOn = it; Prefs.save() }
+            }
+        }
+        if (Prefs.schedOn) item {
+            Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                HourStepper("من", Prefs.schedFrom, Modifier.weight(1f)) { Prefs.schedFrom = it; Prefs.save() }
+                HourStepper("إلى", Prefs.schedTo, Modifier.weight(1f)) { Prefs.schedTo = it; Prefs.save() }
+            }
+        }
+        item {
+            SettingRow(IcDownload, "وقت الشحن فقط", "ما يحمّلش إلا والموبايل على الشاحن", onClick = { Prefs.chargingOnly = !Prefs.chargingOnly; Prefs.save() }) {
+                Toggle(Prefs.chargingOnly) { Prefs.chargingOnly = it; Prefs.save() }
+            }
+        }
+        item { Footnote("لبدء ملف فورًا اضغط ▶ جنبه. لو النظام قفل الخدمة، التحميلات المنتظرة بتكمّل لما تفتح التطبيق.") }
+
+        item { SectionTitle("المظهر") }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Switcher(listOf("تلقائي", "فاتح", "داكن"), Prefs.theme) { Prefs.theme = it; Prefs.save() }
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    for (a in 0..5) {
+                        val c = if (a == 0) cs.surfaceContainerHighest else AccentDots[a - 1]
+                        Box(Modifier.size(46.dp).clip(CircleShape).background(c)
+                            .then(if (Prefs.accent == a) Modifier.border(3.dp, cs.onSurface, CircleShape) else Modifier)
+                            .clickable { Prefs.accent = a; Prefs.save() }, contentAlignment = Alignment.Center) {
+                            if (a == 0) Text("A", style = MaterialTheme.typography.titleMedium, color = cs.onSurface)
+                            else if (Prefs.accent == a) Icon(Icons.Rounded.Check, null, tint = Color.White)
+                        }
+                    }
+                }
+                Footnote("«A» = ألوان خلفية الموبايل (أندرويد 12 وأحدث).")
             }
         }
 

@@ -27,6 +27,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // أي تحميل اتقطع (قفل التطبيق، قطع النت، مهلة الخدمة) بيكمّل لوحده لما تفتح التطبيق
+    override fun onStart() { super.onStart(); Repo.resumePending() }
+
     // لما التطبيق يبقى قدّامك: لو فيه رابط منسوخ جديد نعرضه كاقتراح (القراءة مسموحة بس والنافذة عليها التركيز)
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
