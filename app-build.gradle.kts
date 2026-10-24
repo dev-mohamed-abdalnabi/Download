@@ -15,6 +15,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        resourceConfigurations += listOf("en", "ar")
         ndk { abiFilters += listOf("arm64-v8a") }   // أغلب الموبايلات الحديثة، ويقلل الحجم للنص
     }
     buildTypes {
@@ -30,7 +31,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    androidResources { localeFilters += listOf("en", "ar") }
     buildFeatures { compose = true }
     packaging {
         jniLibs { useLegacyPackaging = true }
